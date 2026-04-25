@@ -4395,11 +4395,13 @@ namespace
 			if (m == WM_CHAR && (w == VK_RETURN || w == VK_ESCAPE))
 				return 0; // suppress beep
 
-			// Suppress the KEYUP for Enter / Escape that follows our handled
-			// KEYDOWN — otherwise the trailing KEYUP runs through the
-			// EDIT proc and our update_suggestions() call below re-shows
-			// the popup we just hid.
-			if (m == WM_KEYUP && (w == VK_RETURN || w == VK_ESCAPE))
+			// Suppress the KEYUP for keys whose KEYDOWN we handled above.
+			// Otherwise the trailing KEYUP runs through the EDIT proc and
+			// our update_suggestions() call below either re-shows a popup
+			// we just hid (Enter/Escape) or re-queries with the mirrored
+			// preview text and hides the popup mid-navigation (Up/Down).
+			if (m == WM_KEYUP && (w == VK_RETURN || w == VK_ESCAPE ||
+			                      w == VK_UP || w == VK_DOWN))
 				return 0;
 
 			// First click into an unfocused EDIT: select the whole URL
