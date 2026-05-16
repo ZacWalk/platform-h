@@ -1225,7 +1225,13 @@ public:
 				params.shift = (key_flags & 0x0004) != 0; // MK_SHIFT
 
 				if (*mmt == pf::mouse_message_type::mouse_wheel)
+				{
 					params.wheel_delta = static_cast<int16_t>(wParam >> 16 & 0xFFFF);
+					// WM_MOUSEWHEEL delivers screen coords — convert to client.
+					POINT sp = {params.point.x, params.point.y};
+					ScreenToClient(m_hWnd, &sp);
+					params.point = {sp.x, sp.y};
+				}
 
 				if (*mmt == pf::mouse_message_type::set_cursor)
 					params.hit_test = static_cast<uint32_t>(lParam & 0xFFFF);
@@ -2198,13 +2204,20 @@ bool pf::platform_text_to_clipboard(const std::string_view text)
 
 //  Configuration (INI file) â”€
 
+static std::string s_config_app_name = "app";
+
+void pf::config_set_app_name(const std::string_view app_name)
+{
+	s_config_app_name = app_name;
+}
+
 static pf::file_path get_config_path()
 {
 	// Try next to the exe first
 	wchar_t w_exe_path[MAX_PATH];
 	GetModuleFileNameW(nullptr, w_exe_path, MAX_PATH);
 	const auto exe_path = pf::utf16_to_utf8(w_exe_path);
-	auto ini_path = pf::file_path(exe_path).folder().combine("rethinkify", "ini");
+	auto ini_path = pf::file_path(exe_path).folder().combine(s_config_app_name, "ini");
 
 	// Probe writability without creating a sentinel file: try to open
 	// the existing ini for write, or create a temp file in the same
@@ -2229,7 +2242,7 @@ static pf::file_path get_config_path()
 	}
 
 	// Fall back to AppData\Local
-	return tmp_folder().combine("rethinkify", "ini");
+	return tmp_folder().combine(s_config_app_name, "ini");
 }
 
 std::string pf::config_read(const std::string_view section, const std::string_view key,
@@ -2412,7 +2425,7 @@ public:
 		if (_diagnostics.empty())
 			_diagnostics = "Spell checker initialized.";
 
-		_custom_dic_path = tmp_folder().combine("rethinkify.dic").view();
+		_custom_dic_path = tmp_folder().combine("alpha.dic").view();
 
 		// Load custom dictionary words
 		std::ifstream f(pf::utf8_to_utf16(_custom_dic_path));
@@ -3097,6 +3110,17 @@ pf::web_host_ptr pf::connect_to_host(const std::string_view host, const bool sec
 	if (!session_handle.is_valid())
 	{
 		return nullptr; // Return empty response on failure
+	}
+
+	// Apply 30s timeouts to prevent indefinite hangs.
+	{
+		DWORD timeout_ms = 30000;
+		InternetSetOptionW(session_handle, INTERNET_OPTION_CONNECT_TIMEOUT,
+		                   &timeout_ms, sizeof(timeout_ms));
+		InternetSetOptionW(session_handle, INTERNET_OPTION_SEND_TIMEOUT,
+		                   &timeout_ms, sizeof(timeout_ms));
+		InternetSetOptionW(session_handle, INTERNET_OPTION_RECEIVE_TIMEOUT,
+		                   &timeout_ms, sizeof(timeout_ms));
 	}
 
 	const auto hostW = utf8_to_utf16(host);
@@ -3826,6 +3850,8 @@ namespace
 			                       WINHTTP_FLAG_ASYNC);
 			if (_session)
 			{
+				// Apply 30s timeouts to prevent indefinite hangs on slow endpoints.
+				WinHttpSetTimeouts(_session, 30000, 30000, 30000, 30000);
 				// Enable modern TLS. WinHTTP defaults often exclude TLS 1.2/1.3,
 				// causing handshake failures against most modern HTTPS sites.
 				DWORD secure_protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
@@ -4243,10 +4269,19 @@ namespace
 		void paint_button(pf::draw_context& dc, const toolbar_btn_runtime& b)
 		{
 			const bool enabled = !b.cfg.is_enabled || b.cfg.is_enabled();
-			if (b.hovered && enabled)
-				dc.fill_solid_rect(b.bounds, _cfg.button_hover);
-			else
-				dc.fill_solid_rect(b.bounds, _cfg.background);
+			const bool checked = b.cfg.is_checked && b.cfg.is_checked();
+
+			const auto bg = (b.hovered && enabled) ? _cfg.button_hover : _cfg.background;
+			dc.fill_solid_rect(b.bounds, bg);
+
+			// Checked indicator: accent underline at the bottom of the button.
+			if (checked)
+			{
+				const int bar_h = std::max(2, b.bounds.height() / 14);
+				const pf::irect bar{b.bounds.left + 4, b.bounds.bottom - bar_h - 1,
+				                    b.bounds.right - 4, b.bounds.bottom - 1};
+				dc.fill_solid_rect(bar, _cfg.button_checked);
+			}
 
 			if (b.cfg.glyph == 0) return;
 
@@ -4261,10 +4296,10 @@ namespace
 			const int tx = b.bounds.left + (b.bounds.width() - sz.cx) / 2;
 			const int ty = b.bounds.top + (b.bounds.height() - sz.cy) / 2;
 
-			const auto color = enabled ? _cfg.button_color : _cfg.button_color.lighten(80);
-			dc.draw_text(tx, ty, b.bounds, utf8, f,
-			             color,
-			             b.hovered && enabled ? _cfg.button_hover : _cfg.background);
+			const auto color = !enabled ? _cfg.button_color.lighten(80)
+			                 : checked  ? _cfg.button_checked
+			                            : _cfg.button_color;
+			dc.draw_text(tx, ty, b.bounds, utf8, f, color, bg);
 		}
 
 		void paint(pf::draw_context& dc)

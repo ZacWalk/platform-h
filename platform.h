@@ -880,6 +880,8 @@ namespace pf
 		constexpr uint32_t search = 0xE721;
 		constexpr uint32_t settings = 0xE713;
 		constexpr uint32_t cancel = 0xE10A;
+		constexpr uint32_t favorite_star = 0xE734;       // outline star
+		constexpr uint32_t favorite_star_fill = 0xE735;  // filled star
 	}
 
 	struct font
@@ -946,7 +948,11 @@ namespace pf
 		virtual void fill_solid_rect(const irect& rc, color_t color) = 0;
 		virtual void fill_solid_rect(int x, int y, int cx, int cy, color_t color) = 0;
 
-		// Text output
+		// Text output.
+		// IMPORTANT: this fills `clip` with bg_color before drawing the text
+		// glyphs (Win32 backend uses ETO_OPAQUE). Pass a TIGHT rect — usually
+		// one sized from measure_text — never a full client rect, or you
+		// will erase whatever was drawn underneath.
 		virtual void draw_text(int x, int y, const irect& clip, std::string_view text,
 		                       const font& f, color_t text_color, color_t bg_color) = 0;
 		virtual isize measure_text(std::string_view text, const font& f) const = 0;
@@ -1260,6 +1266,7 @@ namespace pf
 	void write_stdout(std::string_view text);
 
 	// Configuration (INI file)
+	void config_set_app_name(std::string_view app_name);
 	std::string config_read(std::string_view section, std::string_view key,
 	                        std::string_view default_value = {});
 	void config_write(std::string_view section, std::string_view key, std::string_view value);
@@ -1407,6 +1414,7 @@ namespace pf
 		std::string tooltip;
 		std::function<void()> action;
 		std::function<bool()> is_enabled;
+		std::function<bool()> is_checked; // optional toggle state
 	};
 
 	struct address_bar_config
@@ -1432,6 +1440,7 @@ namespace pf
 		color_t text_color = color_t(0, 0, 0);
 		color_t button_color = color_t(64, 64, 64);
 		color_t button_hover = color_t(220, 220, 220);
+		color_t button_checked = color_t(0, 120, 212); // accent for checked buttons
 		color_t border_color = color_t(200, 200, 200);
 
 		int height = 54; // dialog units (scaled by DPI on use)
