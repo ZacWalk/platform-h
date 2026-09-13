@@ -1,8 +1,8 @@
 # AGENTS.md
 
 platform-h is the platform layer shared by every application in this workspace
-(`list0`, `ovrwin`, `potato`, `rethinkify-app`, `spq`, `stuntcarracer`). It is a
-library with no application of its own.
+(`list0`, `ovrwin`, `potato`, `rethinkify-app`, `crypto-app`, `stuntcarracer`,
+`noterad`). It is a library with no application of its own.
 
 ## Non-negotiables
 
@@ -38,16 +38,29 @@ library with no application of its own.
 
 ## Build and test
 
+This repo uses the vendored dd build system. dd has two modes:
+
+**CLI mode** — the default; each verb runs once and exits:
+
 ```pwsh
-.\dd.ps1 test                  # default command: build + run the suite
-.\dd.ps1 build -Config Debug
+.\dd.ps1 test                  # build both configs and run the suite
+.\dd.ps1 build debug
+.\dd.ps1 doctor --json
 ```
+
+**MCP mode** — `.\dd.ps1 mcp` turns the process into a stdio JSON-RPC server for an
+MCP client, adapting typed requests onto CLI mode. It owns stdout for protocol
+messages, so it prints no result envelope and rejects `--json`. Register it with
+`.\dd.ps1 ide --mcp`.
+
+Project settings live in `dd.psd1`; dependency pins live in
+`cmake/dd-dependencies.json` (`dependencies.owner = 'dd'`).
 
 To check nothing downstream broke, from the workspace root:
 
 ```pwsh
-foreach ($r in 'platform-h','list0','ovrwin','potato','rethinkify-app','spq','stuntcarracer') {
-    Push-Location $r; cmake --build --preset release; Pop-Location
+foreach ($r in 'platform-h','list0','ovrwin','potato','rethinkify-app','crypto-app','stuntcarracer','noterad') {
+    Push-Location $r; .\dd.ps1 build release; Pop-Location
 }
 ```
 

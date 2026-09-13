@@ -1,4 +1,4 @@
-﻿// platform_win.cpp â€” Win32 platform layer: entry point, windowing, timers,
+// platform_win.cpp â€” Win32 platform layer: entry point, windowing, timers,
 // resources, menus, device context, file dialogs, and spell checking
 
 #include "platform.h"
@@ -112,9 +112,14 @@ bool pf::file_path::exists() const
 
 pf::file_path pf::file_path::module_folder()
 {
+	return module_path().folder();
+}
+
+pf::file_path pf::file_path::module_path()
+{
 	wchar_t raw_path[MAX_PATH];
 	GetModuleFileNameW(nullptr, raw_path, MAX_PATH);
-	return file_path(utf16_to_utf8(raw_path)).folder();
+	return file_path(utf16_to_utf8(raw_path));
 }
 
 pf::file_path pf::local_app_data_path()
@@ -2119,6 +2124,24 @@ void pf::write_stdout(const std::string_view text)
 	fflush(stdout);
 }
 
+size_t pf::read_stdin(char* const buffer, const size_t capacity)
+{
+	if (buffer == nullptr || capacity == 0) return 0;
+
+	const auto stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
+	if (stdin_handle != nullptr && stdin_handle != INVALID_HANDLE_VALUE)
+	{
+		DWORD read = 0;
+		if (ReadFile(stdin_handle, buffer, static_cast<DWORD>(capacity), &read, nullptr))
+			return static_cast<size_t>(read);
+
+		// A closed pipe is end of input, not a failure worth reporting.
+		if (GetLastError() == ERROR_BROKEN_PIPE) return 0;
+	}
+
+	return fread(buffer, 1, capacity, stdin);
+}
+
 //  Sound â€” WAV resource helpers â”€
 
 //  Menu & Accelerators 
@@ -2713,6 +2736,414 @@ std::string pf::quote_command_arg(const std::string_view arg)
 bool pf::has_shell_metacharacter(const std::string_view text)
 {
 	return text.find_first_of("&|<>^%!\"\r\n") != std::string_view::npos;
+}
+
+namespace
+{
+	struct process_handle
+	{
+		HANDLE value = nullptr;
+		process_handle() = default;
+		process_handle(const process_handle&) = delete;
+		process_handle& operator=(const process_handle&) = delete;
+		~process_handle() { reset(); }
+		void reset(HANDLE next = nullptr)
+		{
+			if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value);
+			value = next;
+		}
+	};
+
+	void process_error(const char* operation, DWORD error = GetLastError())
+	{
+		pf::debug_trace(std::format("process: {} failed ({})\n", operation, error));
+	}
+
+	struct process_startup
+	{
+		STARTUPINFOEXW info{};
+		std::vector<unsigned char> storage;
+		bool initialized = false;
+		~process_startup()
+		{
+			if (initialized) DeleteProcThreadAttributeList(info.lpAttributeList);
+		}
+		bool set_handles(HANDLE (&handles)[3])
+		{
+			SIZE_T bytes = 0;
+			InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+			storage.resize(bytes);
+			info.StartupInfo.cb = sizeof(info);
+			info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+			info.StartupInfo.hStdInput = handles[0];
+			info.StartupInfo.hStdOutput = handles[1];
+			info.StartupInfo.hStdError = handles[2];
+			info.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
+			initialized = InitializeProcThreadAttributeList(info.lpAttributeList, 1, 0, &bytes) != FALSE;
+			return initialized && UpdateProcThreadAttribute(info.lpAttributeList, 0,
+				PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles, sizeof(handles), nullptr, nullptr);
+		}
+	};
+
+	struct process_pipe
+	{
+		process_handle handle;
+		std::mutex mutex;
+		bool eof = false;
+	};
+
+	bool process_make_pipe(process_pipe& parent, process_handle& child, bool input)
+	{
+		GUID id{};
+		const auto result = CoCreateGuid(&id);
+		if (FAILED(result))
+		{
+			SetLastError(static_cast<DWORD>(result));
+			return false;
+		}
+		wchar_t guid[40]{};
+		StringFromGUID2(id, guid, static_cast<int>(std::size(guid)));
+		const auto name = std::wstring(L"\\\\.\\pipe\\pf-process-") + guid;
+		parent.handle.reset(CreateNamedPipeW(name.c_str(),
+			(input ? PIPE_ACCESS_OUTBOUND : PIPE_ACCESS_INBOUND) |
+			FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+			PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+			1, 65536, 65536, 0, nullptr));
+		if (parent.handle.value == INVALID_HANDLE_VALUE) return false;
+		SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+		child.reset(CreateFileW(name.c_str(), input ? GENERIC_READ : GENERIC_WRITE,
+			0, &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+		return child.value != INVALID_HANDLE_VALUE;
+	}
+
+	std::wstring process_env_value(const wchar_t* key)
+	{
+		std::wstring value(GetEnvironmentVariableW(key, nullptr, 0), L'\0');
+		if (value.empty()) return {};
+		const DWORD size = GetEnvironmentVariableW(key, value.data(), static_cast<DWORD>(value.size()));
+		if (size >= value.size()) return {};
+		value.resize(size);
+		return value;
+	}
+
+	struct process_env_less
+	{
+		bool operator()(const std::wstring& a, const std::wstring& b) const
+		{
+			return CompareStringOrdinal(a.data(), static_cast<int>(a.size()),
+				b.data(), static_cast<int>(b.size()), TRUE) == CSTR_LESS_THAN;
+		}
+	};
+
+	bool process_environment(const std::vector<std::string>& overrides, std::vector<wchar_t>& block)
+	{
+		std::map<std::wstring, std::wstring, process_env_less> entries;
+		auto* environment = GetEnvironmentStringsW();
+		if (!environment) return false;
+		for (auto* p = environment; *p; p += wcslen(p) + 1)
+		{
+			const std::wstring entry(p);
+			const auto eq = entry.find(L'=', 1); // Preserve the hidden '=C:' drive entries.
+			if (eq != std::wstring::npos) entries[entry.substr(0, eq)] = entry.substr(eq + 1);
+		}
+		FreeEnvironmentStringsW(environment);
+		for (const auto& entry : overrides)
+		{
+			const auto eq = entry.find('=');
+			if (!eq || eq == std::string::npos || entry.find('\0') != std::string::npos)
+			{
+				SetLastError(ERROR_INVALID_PARAMETER);
+				return false;
+			}
+			entries[pf::utf8_to_utf16(entry.substr(0, eq))] = pf::utf8_to_utf16(entry.substr(eq + 1));
+		}
+		for (const auto& [key, value] : entries)
+		{
+			block.insert(block.end(), key.begin(), key.end());
+			block.push_back(L'=');
+			block.insert(block.end(), value.begin(), value.end());
+			block.push_back(L'\0');
+		}
+		if (block.empty()) block.push_back(L'\0');
+		block.push_back(L'\0');
+		return true;
+	}
+
+	// cmd expands percent expressions even inside quotes; refuse ambiguous script input.
+	bool process_batch_arg(const std::string& arg)
+	{
+		return arg.find_first_of("%\"\r\n") == std::string::npos;
+	}
+
+	std::string process_batch_quote(const std::string& arg)
+	{
+		// Shims forward %* to an executable: preserve CRT trailing-backslash escaping.
+		auto quoted = pf::quote_command_arg(" " + arg);
+		quoted.erase(1, 1);
+		return quoted;
+	}
+}
+
+struct pf::process
+{
+	process_handle child, job, cancelled, input_closed;
+	process_pipe input, output, error;
+	std::mutex lifecycle;
+
+	~process()
+	{
+		// A job remains useful after its leader exits: grandchildren may still own pipes.
+		if (job.value)
+		{
+			if (!TerminateJobObject(job.value, 1)) process_error("TerminateJobObject");
+		}
+		else if (child.value && WaitForSingleObject(child.value, 0) == WAIT_TIMEOUT)
+		{
+			if (!TerminateProcess(child.value, 1)) process_error("TerminateProcess");
+		}
+		if (child.value) WaitForSingleObject(child.value, INFINITE);
+	}
+};
+
+pf::process_ptr pf::process_spawn(const process_options& options)
+{
+	if (options.exe.empty() || options.exe.find('\0') != std::string::npos ||
+		options.cwd.find('\0') != std::string::npos ||
+		std::any_of(options.args.begin(), options.args.end(),
+			[](const auto& arg) { return arg.find('\0') != std::string::npos; }))
+	{
+		process_error("arguments", ERROR_INVALID_PARAMETER);
+		return {};
+	}
+	auto exe = options.exe;
+	if (exe.find_first_of("\\/") == std::string::npos)
+		exe = std::string(find_executable(exe).view());
+	if (exe.empty())
+	{
+		process_error("executable", ERROR_FILE_NOT_FOUND);
+		return {};
+	}
+	const auto extension = to_lower(file_path(exe).extension());
+	const bool batch = extension == ".bat" || extension == ".cmd";
+	std::string command;
+	std::wstring application;
+	if (batch)
+	{
+		if (!process_batch_arg(exe) ||
+			std::any_of(options.args.begin(), options.args.end(),
+				[](const auto& arg) { return !process_batch_arg(arg); }))
+		{
+			process_error("batch arguments", ERROR_INVALID_PARAMETER);
+			return {};
+		}
+		application = process_env_value(L"ComSpec");
+		if (application.empty())
+		{
+			wchar_t system[MAX_PATH]{};
+			const auto length = GetSystemDirectoryW(system, MAX_PATH);
+			if (!length || length >= MAX_PATH)
+			{
+				process_error("GetSystemDirectoryW");
+				return {};
+			}
+			application = std::wstring(system, length) + L"\\cmd.exe";
+		}
+		command = quote_command_arg(utf16_to_utf8(application)) +
+			" /d /s /v:off /c \"" + process_batch_quote(exe);
+		for (const auto& arg : options.args) command += " " + process_batch_quote(arg);
+		command += '"';
+	}
+	else
+	{
+		application = utf8_to_utf16(exe);
+		command = quote_command_arg(exe);
+		for (const auto& arg : options.args) command += " " + quote_command_arg(arg);
+	}
+	auto wide_command = utf8_to_utf16(command);
+	if (wide_command.size() >= (batch ? 8191u : 32767u))
+	{
+		process_error("command length", ERROR_BAD_LENGTH);
+		return {};
+	}
+	std::vector<wchar_t> environment;
+	if (!process_environment(options.env, environment))
+	{
+		process_error("environment");
+		return {};
+	}
+	auto result = std::make_shared<process>();
+	result->cancelled.reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+	result->input_closed.reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+	if (!result->cancelled.value || !result->input_closed.value)
+	{
+		process_error("CreateEventW");
+		return {};
+	}
+	process_handle child_input, child_output, child_error;
+	if (!process_make_pipe(result->input, child_input, true) ||
+		!process_make_pipe(result->output, child_output, false) ||
+		!process_make_pipe(result->error, child_error, false))
+	{
+		process_error("pipe");
+		return {};
+	}
+	if (options.kill_descendants_on_close)
+	{
+		result->job.reset(CreateJobObjectW(nullptr, nullptr));
+		JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+		limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+		if (!result->job.value || !SetInformationJobObject(result->job.value,
+			JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
+		{
+			process_error("job");
+			return {};
+		}
+	}
+	HANDLE handles[]{child_input.value, child_output.value, child_error.value};
+	process_startup startup;
+	if (!startup.set_handles(handles))
+	{
+		process_error("handle inheritance");
+		return {};
+	}
+	PROCESS_INFORMATION created{};
+	const auto cwd = utf8_to_utf16(options.cwd);
+	if (!CreateProcessW(application.c_str(), wide_command.data(), nullptr, nullptr, TRUE,
+		CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
+		environment.data(), cwd.empty() ? nullptr : cwd.c_str(), &startup.info.StartupInfo, &created))
+	{
+		process_error("CreateProcessW");
+		return {};
+	}
+	result->child.reset(created.hProcess);
+	process_handle main_thread;
+	main_thread.reset(created.hThread);
+	if (result->job.value && !AssignProcessToJobObject(result->job.value, result->child.value))
+	{
+		process_error("AssignProcessToJobObject");
+		// A suspended child not yet in our job must be killed explicitly on failure.
+		if (!TerminateProcess(result->child.value, 1)) process_error("TerminateProcess");
+		return {};
+	}
+	if (ResumeThread(main_thread.value) == static_cast<DWORD>(-1))
+	{
+		process_error("ResumeThread");
+		return {};
+	}
+	return result;
+}
+
+namespace
+{
+	size_t process_transfer(pf::process& owner, process_pipe& pipe, char* data, size_t bytes, bool write)
+	{
+		if (pipe.eof || !pipe.handle.value ||
+			WaitForSingleObject(owner.cancelled.value, 0) == WAIT_OBJECT_0 ||
+			(write && WaitForSingleObject(owner.input_closed.value, 0) == WAIT_OBJECT_0))
+			return 0;
+		process_handle event;
+		event.reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+		if (!event.value) { process_error("CreateEventW"); return 0; }
+		OVERLAPPED operation{};
+		operation.hEvent = event.value;
+		DWORD transferred = 0;
+		const DWORD count = static_cast<DWORD>(std::min<size_t>(bytes, 65536));
+		const bool success = write ?
+			WriteFile(pipe.handle.value, data, count, &transferred, &operation) != FALSE :
+			ReadFile(pipe.handle.value, data, count, &transferred, &operation) != FALSE;
+		DWORD error = success ? ERROR_SUCCESS : GetLastError();
+		if (error == ERROR_IO_PENDING)
+		{
+			HANDLE events[]{owner.cancelled.value, write ? owner.input_closed.value : event.value, event.value};
+			const DWORD wait = WaitForMultipleObjects(write ? 3 : 2, events, FALSE, INFINITE);
+			if (wait != WAIT_OBJECT_0 + (write ? 2 : 1))
+			{
+				if (!CancelIoEx(pipe.handle.value, &operation) && GetLastError() != ERROR_NOT_FOUND)
+					process_error("CancelIoEx");
+			}
+			// Even a cancelled operation owns its OVERLAPPED and buffer until completion.
+			error = GetOverlappedResult(pipe.handle.value, &operation, &transferred, TRUE) ?
+				ERROR_SUCCESS : GetLastError();
+		}
+		if (error != ERROR_SUCCESS)
+		{
+			if (error != ERROR_BROKEN_PIPE && error != ERROR_PIPE_NOT_CONNECTED &&
+				error != ERROR_OPERATION_ABORTED) process_error(write ? "WriteFile" : "ReadFile", error);
+			pipe.eof = true;
+			return 0;
+		}
+		if (!transferred) pipe.eof = true;
+		return transferred;
+	}
+}
+
+size_t pf::process_read(const process_ptr& process, char* buffer, size_t bytes)
+{
+	const auto owner = process;
+	if (!owner || !buffer || !bytes) return 0;
+	std::lock_guard lock(owner->output.mutex);
+	return process_transfer(*owner, owner->output, buffer, bytes, false);
+}
+
+size_t pf::process_read_err(const process_ptr& process, char* buffer, size_t bytes)
+{
+	const auto owner = process;
+	if (!owner || !buffer || !bytes) return 0;
+	std::lock_guard lock(owner->error.mutex);
+	return process_transfer(*owner, owner->error, buffer, bytes, false);
+}
+
+bool pf::process_write(const process_ptr& process, std::string_view text)
+{
+	const auto owner = process;
+	if (!owner) return false;
+	std::lock_guard lock(owner->input.mutex);
+	if (!owner->input.handle.value || owner->input.eof ||
+		WaitForSingleObject(owner->input_closed.value, 0) == WAIT_OBJECT_0 ||
+		WaitForSingleObject(owner->cancelled.value, 0) == WAIT_OBJECT_0) return false;
+	while (!text.empty())
+	{
+		const auto written = process_transfer(*owner, owner->input,
+			const_cast<char*>(text.data()), text.size(), true);
+		if (!written) return false;
+		text.remove_prefix(written);
+	}
+	return true;
+}
+
+void pf::process_close_input(const process_ptr& process)
+{
+	const auto owner = process;
+	if (!owner) return;
+	if (!SetEvent(owner->input_closed.value)) process_error("SetEvent");
+	std::lock_guard lock(owner->input.mutex);
+	owner->input.handle.reset();
+}
+
+bool pf::process_alive(const process_ptr& process)
+{
+	const auto owner = process;
+	if (!owner) return false;
+	const auto result = WaitForSingleObject(owner->child.value, 0);
+	if (result == WAIT_FAILED) process_error("WaitForSingleObject");
+	return result == WAIT_TIMEOUT;
+}
+
+void pf::process_terminate(const process_ptr& process)
+{
+	const auto owner = process;
+	if (!owner) return;
+	if (!SetEvent(owner->cancelled.value)) process_error("SetEvent");
+	process_close_input(owner);
+	std::lock_guard lock(owner->lifecycle);
+	if (owner->job.value)
+	{
+		if (!TerminateJobObject(owner->job.value, 1)) process_error("TerminateJobObject");
+	}
+	else if (process_alive(owner) && !TerminateProcess(owner->child.value, 1))
+		process_error("TerminateProcess");
+	if (WaitForSingleObject(owner->child.value, INFINITE) == WAIT_FAILED)
+		process_error("WaitForSingleObject");
 }
 
 pf::file_path pf::find_executable(const std::string_view name)
@@ -4068,14 +4499,69 @@ static std::string get_content_type(const HINTERNET request_handle)
 	return result;
 }
 
+// The synchronous web client below uses WinHTTP for bounded timeouts, redirect
+// and cookie control; the include sits here rather than with the WIC block at
+// the bottom because these definitions precede it.
+#include <winhttp.h>
+#pragma comment(lib, "winhttp.lib")
+static bool web_header_token(const std::string_view text)
+{
+	if (text.empty()) return false;
+	for (const unsigned char c : text)
+	{
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			std::string_view("!#$%&'*+-.^_`|~").find(c) != std::string_view::npos)) return false;
+	}
+	return true;
+}
+
+static bool web_header_value(const std::string_view text)
+{
+	for (const unsigned char c : text)
+	{
+		if ((c < 32 && c != '\t') || c == 127) return false;
+	}
+	return text.size() < INT_MAX;
+}
+
+static bool web_multipart_name(const std::string_view text)
+{
+	return web_header_value(text) && text.find_first_of("\"\\") == std::string_view::npos;
+}
+
+static std::string_view web_trim(std::string_view text)
+{
+	while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) text.remove_prefix(1);
+	while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) text.remove_suffix(1);
+	return text;
+}
+
+static bool web_length(const std::string_view text, uint64_t& value)
+{
+	if (text.empty()) return false;
+	const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+	return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size();
+}
+
+static bool set_web_timeouts(const HINTERNET handle, const uint32_t timeout)
+{
+	DWORD milliseconds = timeout == 0 ? 30000 : timeout;
+	for (const auto option : {INTERNET_OPTION_CONNECT_TIMEOUT, INTERNET_OPTION_SEND_TIMEOUT,
+		INTERNET_OPTION_RECEIVE_TIMEOUT})
+	{
+		if (!InternetSetOptionW(handle, option, &milliseconds, sizeof(milliseconds))) return false;
+	}
+	return true;
+}
+
 static std::string format_path(const pf::web_request& req)
 {
-	auto result = req.path;
+	auto result = req.path.empty() ? std::string("/") : req.path;
 
 	if (!req.query.empty())
 	{
 		bool is_first = true;
-		result += "?";
+		result += result.find('?') == std::string::npos ? "?" : "&";
 
 		for (const auto& qp : req.query)
 		{
@@ -4162,6 +4648,9 @@ struct pf::web_host
 	HINTERNET session_handle = nullptr;
 	HINTERNET connection_handle = nullptr;
 	bool secure = true;
+	std::string name;
+	std::string user_agent;
+	int port = 0;
 
 	~web_host()
 	{
@@ -4170,11 +4659,129 @@ struct pf::web_host
 	}
 };
 
+struct sync_http_handle
+{
+	HINTERNET value = nullptr;
+	sync_http_handle() = default;
+	sync_http_handle(const sync_http_handle&) = delete;
+	sync_http_handle& operator=(const sync_http_handle&) = delete;
+	~sync_http_handle() { if (value) WinHttpCloseHandle(value); }
+};
+
+// The public call blocks, but async handles permit documented, race-free
+// cancellation when WinHTTP's native timeout granularity exceeds the deadline.
+class bounded_http_request
+{
+	HANDLE completed = nullptr;
+	HANDLE closed = nullptr;
+	bool has_callback = false;
+	DWORD timeout = 30000;
+	std::atomic<DWORD> error = ERROR_SUCCESS;
+	std::atomic<DWORD> received = 0;
+
+	static void CALLBACK callback(HINTERNET, const DWORD_PTR context, const DWORD status,
+		void* info, const DWORD length)
+	{
+		const auto self = reinterpret_cast<bounded_http_request*>(context);
+		if (!self) return;
+		switch (status)
+		{
+		case WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING:
+			SetEvent(self->closed);
+			break;
+		case WINHTTP_CALLBACK_STATUS_REQUEST_ERROR:
+			self->error = static_cast<WINHTTP_ASYNC_RESULT*>(info)->dwError;
+			SetEvent(self->completed);
+			break;
+		case WINHTTP_CALLBACK_STATUS_READ_COMPLETE:
+			self->received = length;
+			SetEvent(self->completed);
+			break;
+		case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
+		case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
+			SetEvent(self->completed);
+			break;
+		}
+	}
+
+public:
+	HINTERNET value = nullptr;
+	bounded_http_request() = default;
+	bounded_http_request(const bounded_http_request&) = delete;
+	bounded_http_request& operator=(const bounded_http_request&) = delete;
+
+	~bounded_http_request()
+	{
+		close();
+		if (completed) CloseHandle(completed);
+		if (closed) CloseHandle(closed);
+	}
+
+	void close()
+	{
+		if (!value) return;
+		const auto handle = value;
+		value = nullptr;
+		WinHttpCloseHandle(handle);
+		if (has_callback) WaitForSingleObject(closed, INFINITE);
+	}
+
+	bool initialize(const uint32_t timeout_ms)
+	{
+		completed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+		closed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+		if (!completed || !closed) return false;
+		timeout = std::min<uint32_t>(timeout_ms ? timeout_ms : 30000, INFINITE - 1);
+		DWORD_PTR context = reinterpret_cast<DWORD_PTR>(this);
+		if (!WinHttpSetOption(value, WINHTTP_OPTION_CONTEXT_VALUE, &context, sizeof(context))) return false;
+		if (WinHttpSetStatusCallback(value, callback,
+			WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_HANDLES, 0) == WINHTTP_INVALID_STATUS_CALLBACK)
+			return false;
+		has_callback = true;
+		return true;
+	}
+
+	template <typename F>
+	bool invoke(F issue)
+	{
+		error = ERROR_SUCCESS;
+		received = 0;
+		ResetEvent(completed);
+		if (!issue()) return false;
+		if (WaitForSingleObject(completed, timeout) != WAIT_OBJECT_0)
+		{
+			// Complete cancellation before the caller releases its read/write buffers.
+			close();
+			SetLastError(ERROR_WINHTTP_TIMEOUT);
+			return false;
+		}
+		if (error != ERROR_SUCCESS)
+		{
+			SetLastError(error);
+			return false;
+		}
+		return true;
+	}
+
+	bool read(void* buffer, const DWORD size, DWORD& count)
+	{
+		if (!invoke([&] { return WinHttpReadData(value, buffer, size, nullptr); })) return false;
+		count = received;
+		return true;
+	}
+};
+
 pf::web_host_ptr pf::connect_to_host(const std::string_view host, const bool secure_in, const int port_in,
                                      const std::string_view user_agent)
 {
+	if (host.empty() || host.size() >= INT_MAX || port_in < 0 || port_in > 65535 ||
+		!web_header_value(user_agent)) return nullptr;
+	for (const unsigned char c : host)
+	{
+		if (c <= 32 || c == 127 || std::string_view("/\\?#@").find(c) != std::string_view::npos) return nullptr;
+	}
 	// InternetOpen and InternetConnect
-	const std::wstring agent_str = user_agent.empty() ? L"PotatoApp/1.0" : utf8_to_utf16(user_agent);
+	const std::wstring agent_str = user_agent.empty() ? L"PotatoApp/1.0" : pf::utf8_to_utf16(user_agent);
 	inet_handle session_handle(InternetOpenW(agent_str.c_str(), INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0));
 
 	if (!session_handle.is_valid())
@@ -4182,18 +4789,9 @@ pf::web_host_ptr pf::connect_to_host(const std::string_view host, const bool sec
 		return nullptr; // Return empty response on failure
 	}
 
-	// Apply 30s timeouts to prevent indefinite hangs.
-	{
-		DWORD timeout_ms = 30000;
-		InternetSetOptionW(session_handle, INTERNET_OPTION_CONNECT_TIMEOUT,
-		                   &timeout_ms, sizeof(timeout_ms));
-		InternetSetOptionW(session_handle, INTERNET_OPTION_SEND_TIMEOUT,
-		                   &timeout_ms, sizeof(timeout_ms));
-		InternetSetOptionW(session_handle, INTERNET_OPTION_RECEIVE_TIMEOUT,
-		                   &timeout_ms, sizeof(timeout_ms));
-	}
+	if (!set_web_timeouts(session_handle, 0)) return nullptr;
 
-	const auto hostW = utf8_to_utf16(host);
+	const auto hostW = pf::utf8_to_utf16(host);
 	const auto port = port_in == 0
 		                  ? (secure_in ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT)
 		                  : port_in;
@@ -4209,25 +4807,44 @@ pf::web_host_ptr pf::connect_to_host(const std::string_view host, const bool sec
 	// to make_shared, because web_host's destructor closes the handles and the
 	// default copy/move would shallow-copy them, leaving the live instance with
 	// already-closed (invalid) handles.
-	auto host_ptr = std::make_shared<web_host>();
+	auto host_ptr = std::make_shared<pf::web_host>();
 	host_ptr->session_handle = session_handle.detach();
 	host_ptr->connection_handle = conn.detach();
 	host_ptr->secure = secure_in;
+	host_ptr->name = host;
+	host_ptr->port = port_in;
+	host_ptr->user_agent = user_agent;
 	return host_ptr;
 }
 
 pf::web_response pf::send_request(const web_host_ptr& host, const web_request& req)
 {
 	web_response result;
-
-	if (!host)
+	const auto fail = [&result](const web_response_error error)
+	{
+		result.error = error;
+		result.body.clear();
 		return result;
+	};
+
+	if (!host || (req.verb != web_request_verb::GET && req.verb != web_request_verb::POST) ||
+		req.body.size() > MAXDWORD || req.path.size() >= INT_MAX ||
+		(!req.path.empty() && (req.path.front() != '/' || req.path.starts_with("//"))))
+		return fail(web_response_error::invalid_request);
+	for (const unsigned char c : req.path)
+	{
+		if (c <= 32 || c == 127 || c == '\\' || c == '#') return fail(web_response_error::invalid_request);
+	}
 
 	std::string content;
 	std::string header_str;
 
 	for (const auto& h : req.headers)
 	{
+		if (!web_header_token(h.first) || !web_header_value(h.second) ||
+			h.first.size() >= INT_MAX || header_str.size() + h.first.size() + h.second.size() + 4 >= INT_MAX ||
+			icmp(h.first, "Transfer-Encoding") == 0 || (!req.use_cookies && icmp(h.first, "Cookie") == 0))
+			return fail(web_response_error::invalid_request);
 		header_str += h.first;
 		header_str += ": ";
 		header_str += h.second;
@@ -4244,6 +4861,9 @@ pf::web_response pf::send_request(const web_host_ptr& host, const web_request& r
 
 		for (const auto& f : req.form_data)
 		{
+			if (!web_multipart_name(f.first) ||
+				content.size() + f.first.size() + f.second.size() + 256 > MAXDWORD)
+				return fail(web_response_error::invalid_request);
 			content += "--";
 			content += boundary;
 			content += "\r\n";
@@ -4258,6 +4878,9 @@ pf::web_response pf::send_request(const web_host_ptr& host, const web_request& r
 
 		if (!req.upload_file_path.empty() && !req.file_form_data_name.empty())
 		{
+			if (!web_multipart_name(req.file_form_data_name) || !web_multipart_name(req.file_name) ||
+				content.size() + req.file_form_data_name.size() + req.file_name.size() + 256 > MAXDWORD)
+				return fail(web_response_error::invalid_request);
 			std::string ct = "application/octet-stream";
 			if (req.upload_file_path.extension() == ".zip") ct = "application/x-zip-compressed";
 
@@ -4274,14 +4897,17 @@ pf::web_response pf::send_request(const web_host_ptr& host, const web_request& r
 			content += "\r\n\r\n";
 
 			auto fh = open_for_read(req.upload_file_path);
-			if (fh)
+			if (!fh) return fail(web_response_error::transport);
+			std::vector<uint8_t> buf(65536);
+			for (;;)
 			{
-				std::vector<uint8_t> buf(65536);
 				uint32_t bytes_read = 0;
-				while (fh->read(buf.data(), static_cast<uint32_t>(buf.size()), &bytes_read) && bytes_read > 0)
-				{
-					content.append(reinterpret_cast<const char*>(buf.data()), bytes_read);
-				}
+				if (!fh->read(buf.data(), static_cast<uint32_t>(buf.size()), &bytes_read))
+					return fail(web_response_error::transport);
+				if (bytes_read == 0) break;
+				if (content.size() > MAXDWORD - 256 || bytes_read > MAXDWORD - content.size() - 256)
+					return fail(web_response_error::invalid_request);
+				content.append(reinterpret_cast<const char*>(buf.data()), bytes_read);
 			}
 
 			content += "\r\n";
@@ -4295,107 +4921,237 @@ pf::web_response pf::send_request(const web_host_ptr& host, const web_request& r
 		header_str += "\r\n";
 	}
 
+	for (const auto& h : req.headers)
+	{
+		if (icmp(h.first, "Content-Length") == 0)
+		{
+			uint64_t length = 0;
+			if (!web_length(web_trim(h.second), length) || length != content.size())
+				return fail(web_response_error::invalid_request);
+		}
+	}
+	size_t path_bound = req.path.size();
+	for (const auto& [key, value] : req.query)
+	{
+		if (path_bound > INT_MAX - 2 || key.size() > (INT_MAX - path_bound - 2) / 3 ||
+			value.size() > (INT_MAX - path_bound - 2) / 3 - key.size())
+			return fail(web_response_error::invalid_request);
+		path_bound += 3 * (key.size() + value.size()) + 2;
+	}
+	const auto path = format_path(req);
+	if (path.size() >= INT_MAX || header_str.size() >= INT_MAX)
+		return fail(web_response_error::invalid_request);
 	const auto wverb = req.verb == web_request_verb::GET ? L"GET" : L"POST";
-	const auto wpath = utf8_to_utf16(format_path(req));
+	const auto wpath = utf8_to_utf16(path.empty() ? "/" : path);
 	auto flags = INTERNET_FLAG_KEEP_CONNECTION | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_AUTH |
 		INTERNET_FLAG_RELOAD;
 	if (host->secure) flags |= INTERNET_FLAG_SECURE;
+	if (!req.follow_redirects) flags |= INTERNET_FLAG_NO_AUTO_REDIRECT;
+	if (!req.use_cookies) flags |= INTERNET_FLAG_NO_COOKIES;
 
-	inet_handle request_handle(HttpOpenRequest(host->connection_handle, wverb, wpath.c_str(), nullptr, nullptr, nullptr,
-	                                           flags, 0));
-
-	if (!request_handle.is_valid())
-	{
-		result.body = "HttpOpenRequest failed (Win32 err " + std::to_string(::GetLastError()) + ")";
-		return result;
-	}
-
+	// WinINet can report success on incomplete chunks and round short timeouts.
+	// Bounded requests consume an isolated WinHTTP session synchronously instead.
+	const bool bounded = req.max_response_bytes || req.max_header_bytes || req.timeout_ms;
+	sync_http_handle bounded_session;
+	sync_http_handle bounded_connection;
+	bounded_http_request bounded_request;
+	inet_handle request_handle;
 	const auto headerW = utf8_to_utf16(header_str);
-
-	if (content.empty())
+	const auto transport_failure = [&]
 	{
-		// Simple request with no body â€” use HttpSendRequest which handles redirects properly
-		if (!HttpSendRequest(request_handle, headerW.c_str(), static_cast<DWORD>(headerW.size()), nullptr, 0))
+		const auto native_error = GetLastError();
+		if (bounded && bounded_request.value && result.status_code == 0)
 		{
-			result.body = "HttpSendRequest failed (Win32 err " + std::to_string(::GetLastError()) + ")";
-			return result;
+			DWORD status = 0;
+			DWORD size = sizeof(status);
+			if (WinHttpQueryHeaders(bounded_request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+				WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX))
+				result.status_code = static_cast<int>(status);
 		}
+		return fail(bounded && native_error == ERROR_WINHTTP_HEADER_SIZE_OVERFLOW
+			? web_response_error::response_limit : web_response_error::transport);
+	};
+	if (bounded)
+	{
+		const auto agent = host->user_agent.empty() ? L"PotatoApp/1.0" : utf8_to_utf16(host->user_agent);
+		bounded_session.value = WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+			WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+		if (!bounded_session.value) return transport_failure();
+		const auto timeout = static_cast<int>(std::min<uint32_t>(req.timeout_ms ? req.timeout_ms : 30000, INT_MAX));
+		if (!WinHttpSetTimeouts(bounded_session.value, timeout, timeout, timeout, timeout))
+			return transport_failure();
+		const auto port = host->port ? host->port : (host->secure ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT);
+		bounded_connection.value = WinHttpConnect(bounded_session.value, utf8_to_utf16(host->name).c_str(),
+			static_cast<INTERNET_PORT>(port), 0);
+		if (!bounded_connection.value) return transport_failure();
+		bounded_request.value = WinHttpOpenRequest(bounded_connection.value, wverb, wpath.c_str(), nullptr,
+			WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, host->secure ? WINHTTP_FLAG_SECURE : 0);
+		if (!bounded_request.value) return transport_failure();
+		if (!bounded_request.initialize(req.timeout_ms)) return transport_failure();
+		DWORD receive_timeout = static_cast<DWORD>(timeout);
+		if (!WinHttpSetTimeouts(bounded_request.value, timeout, timeout, timeout, timeout) ||
+			!WinHttpSetOption(bounded_request.value, WINHTTP_OPTION_RECEIVE_RESPONSE_TIMEOUT,
+				&receive_timeout, sizeof(receive_timeout))) return transport_failure();
+		DWORD disabled = WINHTTP_DISABLE_AUTHENTICATION;
+		if (!req.follow_redirects) disabled |= WINHTTP_DISABLE_REDIRECTS;
+		if (!req.use_cookies) disabled |= WINHTTP_DISABLE_COOKIES;
+		if (!WinHttpSetOption(bounded_request.value, WINHTTP_OPTION_DISABLE_FEATURE, &disabled, sizeof(disabled)))
+			return transport_failure();
+		if (req.max_header_bytes)
+		{
+			DWORD maximum = static_cast<DWORD>(std::min<size_t>(req.max_header_bytes, MAXDWORD));
+			if (!WinHttpSetOption(bounded_request.value, WINHTTP_OPTION_MAX_RESPONSE_HEADER_SIZE,
+				&maximum, sizeof(maximum))) return transport_failure();
+		}
+		if (!bounded_request.invoke([&] {
+			return WinHttpSendRequest(bounded_request.value, headerW.c_str(), static_cast<DWORD>(headerW.size()),
+				content.empty() ? nullptr : content.data(), static_cast<DWORD>(content.size()),
+				static_cast<DWORD>(content.size()), reinterpret_cast<DWORD_PTR>(&bounded_request));
+		}) || !bounded_request.invoke([&] { return WinHttpReceiveResponse(bounded_request.value, nullptr); }))
+			return transport_failure();
 	}
 	else
 	{
-		// Request with body â€” use HttpSendRequestEx for chunked sending
-		INTERNET_BUFFERS buffers = {};
-		buffers.dwStructSize = sizeof(INTERNET_BUFFERS);
-		buffers.lpcszHeader = headerW.c_str();
-		buffers.dwHeadersTotal = buffers.dwHeadersLength = static_cast<DWORD>(headerW.size());
-		buffers.dwBufferTotal = static_cast<DWORD>(content.size());
+		request_handle.reset(HttpOpenRequest(host->connection_handle, wverb, wpath.c_str(), nullptr, nullptr, nullptr,
+			flags, 0));
+		if (!request_handle.is_valid()) return transport_failure();
+		if (!set_web_timeouts(request_handle, 0)) return transport_failure();
 
-		if (!HttpSendRequestEx(request_handle, &buffers, nullptr, 0, 0))
+		if (content.empty())
 		{
-			return result;
+			if (!HttpSendRequest(request_handle, headerW.c_str(), static_cast<DWORD>(headerW.size()), nullptr, 0))
+				return fail(web_response_error::transport);
 		}
-
-		constexpr size_t chunk_size = 8192;
-		size_t total_written = 0;
-
-		while (total_written < content.size())
+		else
 		{
-			const auto remaining = content.size() - total_written;
-			const auto to_write = std::min(chunk_size, remaining);
-			DWORD written = 0;
+			INTERNET_BUFFERS buffers = {};
+			buffers.dwStructSize = sizeof(INTERNET_BUFFERS);
+			buffers.lpcszHeader = headerW.c_str();
+			buffers.dwHeadersTotal = buffers.dwHeadersLength = static_cast<DWORD>(headerW.size());
+			buffers.dwBufferTotal = static_cast<DWORD>(content.size());
 
-			if (!InternetWriteFile(request_handle, content.data() + total_written, static_cast<DWORD>(to_write),
-			                       &written))
+			if (!HttpSendRequestEx(request_handle, &buffers, nullptr, 0, 0))
+				return fail(web_response_error::transport);
+
+			constexpr size_t chunk_size = 8192;
+			size_t total_written = 0;
+
+			while (total_written < content.size())
 			{
-				return result;
+				const auto remaining = content.size() - total_written;
+				const auto to_write = std::min(chunk_size, remaining);
+				DWORD written = 0;
+				if (!InternetWriteFile(request_handle, content.data() + total_written, static_cast<DWORD>(to_write),
+					&written) || written == 0) return fail(web_response_error::transport);
+				total_written += written;
 			}
-
-			if (written == 0)
-			{
-				return result;
-			}
-
-			total_written += written;
-		}
-
-		if (!::HttpEndRequest(request_handle, nullptr, 0, 0))
-		{
-			return result;
+			if (!HttpEndRequest(request_handle, nullptr, 0, 0)) return fail(web_response_error::transport);
 		}
 	}
 
-	result.status_code = get_status_code(request_handle);
-	result.content_type = get_content_type(request_handle);
+	DWORD status = 0;
+	DWORD size = sizeof(status);
+	if (bounded ? !WinHttpQueryHeaders(bounded_request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+		WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX)
+		: !HttpQueryInfoW(request_handle, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+		&status, &size, nullptr)) return transport_failure();
+	result.status_code = static_cast<int>(status);
 
+	size = 0;
+	if (bounded)
+	{
+		if (WinHttpQueryHeaders(bounded_request.value, WINHTTP_QUERY_RAW_HEADERS_CRLF,
+			WINHTTP_HEADER_NAME_BY_INDEX, nullptr, &size, WINHTTP_NO_HEADER_INDEX) ||
+			GetLastError() != ERROR_INSUFFICIENT_BUFFER || size < sizeof(wchar_t))
+			return transport_failure();
+		const auto chars = size / sizeof(wchar_t);
+		if (req.max_header_bytes && chars - 1 > req.max_header_bytes)
+			return fail(web_response_error::response_limit);
+		std::wstring headers(chars, L'\0');
+		if (!WinHttpQueryHeaders(bounded_request.value, WINHTTP_QUERY_RAW_HEADERS_CRLF,
+			WINHTTP_HEADER_NAME_BY_INDEX, headers.data(), &size, WINHTTP_NO_HEADER_INDEX))
+			return transport_failure();
+		headers.resize(size / sizeof(wchar_t));
+		// HTTP header octets are widened one-to-one by WinHTTP, not UTF-8 text.
+		result.headers.reserve(headers.size());
+		for (const auto c : headers) result.headers.push_back(static_cast<char>(c));
+	}
+	else
+	{
+		if (HttpQueryInfoA(request_handle, HTTP_QUERY_RAW_HEADERS_CRLF, nullptr, &size, nullptr) ||
+			GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0)
+			return fail(web_response_error::transport);
+		result.headers.resize(size);
+		if (!HttpQueryInfoA(request_handle, HTTP_QUERY_RAW_HEADERS_CRLF, result.headers.data(), &size, nullptr))
+		{
+			result.headers.clear();
+			return fail(web_response_error::transport);
+		}
+		result.headers.resize(size);
+	}
+	if (req.max_header_bytes && result.headers.size() > req.max_header_bytes)
+	{
+		result.headers.clear();
+		return fail(web_response_error::response_limit);
+	}
+
+	std::optional<uint64_t> content_length;
+	bool transfer_encoded = false;
+	std::string_view remaining_headers = result.headers;
+	while (!remaining_headers.empty())
+	{
+		const auto end = remaining_headers.find("\r\n");
+		const auto line = remaining_headers.substr(0, end);
+		if (const auto colon = line.find(':'); colon != std::string_view::npos)
+		{
+			const auto name = line.substr(0, colon);
+			const auto value = web_trim(line.substr(colon + 1));
+			if (icmp(name, "Content-Length") == 0)
+			{
+				uint64_t length = 0;
+				if (!web_length(value, length) || (content_length && *content_length != length))
+					return fail(web_response_error::transport);
+				content_length = length;
+			}
+			else if (icmp(name, "Content-Type") == 0)
+				result.content_type = value;
+			else if (icmp(name, "Transfer-Encoding") == 0)
+				transfer_encoded = true;
+		}
+		if (end == std::string_view::npos) break;
+		remaining_headers.remove_prefix(end + 2);
+	}
+	if (transfer_encoded && content_length) return fail(web_response_error::transport);
+	const bool no_body = status == 204 || status == 304 || (status >= 100 && status < 200);
+	if (!no_body && req.max_response_bytes && content_length && *content_length > req.max_response_bytes)
+		return fail(web_response_error::response_limit);
+
+	writable_file_handle_ptr download_file;
 	if (!req.download_file_path.empty())
 	{
-		const auto download_file = open_file_for_write(req.download_file_path);
-
-		if (download_file)
-		{
-			uint8_t buffer[8192];
-			DWORD read = 0;
-
-			while (InternetReadFile(request_handle, buffer, sizeof(buffer), &read) && read > 0)
-			{
-				if (download_file->write(buffer, read) != read)
-				{
-					break;
-				}
-			}
-		}
+		download_file = open_file_for_write(req.download_file_path);
+		if (!download_file) return fail(web_response_error::transport);
 	}
-	else
+	uint64_t total = 0;
+	for (;;)
 	{
 		uint8_t buffer[8192];
 		DWORD read = 0;
-
-		while (InternetReadFile(request_handle, buffer, sizeof(buffer), &read) && read > 0)
+		if (bounded ? !bounded_request.read(buffer, sizeof(buffer), read)
+			: !InternetReadFile(request_handle, buffer, sizeof(buffer), &read))
+			return transport_failure();
+		if (read == 0) break;
+		if (req.max_response_bytes && (total > req.max_response_bytes || read > req.max_response_bytes - total))
+			return fail(web_response_error::response_limit);
+		total += read;
+		if (download_file)
 		{
-			result.body.append(buffer, buffer + read);
+			if (download_file->write(buffer, read) != read) return fail(web_response_error::transport);
 		}
+		else
+			result.body.append(reinterpret_cast<const char*>(buffer), read);
 	}
-
+	if (!no_body && content_length && total != *content_length) return fail(web_response_error::transport);
 	return result;
 }
 

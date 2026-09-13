@@ -647,6 +647,10 @@ namespace pf
 		}
 
 		static file_path module_folder();
+
+		// The running executable's own path. module_folder() is this with the
+		// file name removed.
+		static file_path module_path();
 	};
 
 	struct ihash
@@ -1391,6 +1395,11 @@ namespace pf
 	void debug_trace(const std::string& msg);
 	void write_stdout(std::string_view text);
 
+	// Reads up to capacity bytes from stdin, returning the count read and 0 at
+	// end of input. Binary-safe: no newline or encoding translation, so a stdio
+	// protocol server can frame its own messages.
+	size_t read_stdin(char* buffer, size_t capacity);
+
 	// Binds stdout/stderr to the parent console. A GUI-subsystem executable has
 	// no console of its own, so printf is invisible from a CLI mode until this
 	// has run.
@@ -1449,6 +1458,28 @@ namespace pf
 
 	// ── Child processes ────────────────────────────────────────────────────────────────────
 	// Used to host a tool that speaks a line-based protocol over its standard streams.
+
+	struct process_options
+	{
+		std::string exe, cwd;
+		std::vector<std::string> args, env; // NAME=VALUE overrides of the inherited environment.
+		bool kill_descendants_on_close = true;
+	};
+
+	struct process;
+	using process_ptr = std::shared_ptr<process>;
+
+	// Binary streams; drain stdout and stderr independently. Zero means EOF/error/cancelled.
+	// Calls on separate shared_ptr copies are thread-safe; writes are serialized whole.
+	process_ptr process_spawn(const process_options&);
+	size_t process_read(const process_ptr&, char* buffer, size_t bytes);
+	size_t process_read_err(const process_ptr&, char* buffer, size_t bytes);
+	bool process_write(const process_ptr&, std::string_view);
+	// Cancels an outstanding write and closes stdin; terminate also cancels both readers.
+	void process_close_input(const process_ptr&);
+	bool process_alive(const process_ptr&);
+	void process_terminate(const process_ptr&);
+
 
 	struct child_process
 	{
@@ -1515,6 +1546,22 @@ namespace pf
 		file_path download_file_path;
 
 		web_request_verb verb = web_request_verb::GET;
+
+		bool follow_redirects = true;
+		bool use_cookies = true;
+		// Zero leaves body/initial-header storage unbounded; limits count bytes, not characters.
+		size_t max_response_bytes = 0;
+		size_t max_header_bytes = 0;
+		// Per network operation, including connection establishment; zero retains 30 seconds.
+		uint32_t timeout_ms = 0;
+	};
+
+	enum class web_response_error
+	{
+		none,
+		invalid_request,
+		transport,
+		response_limit
 	};
 
 	struct web_response
@@ -1523,6 +1570,8 @@ namespace pf
 		std::string body;
 		std::string content_type;
 		int status_code = 0;
+		// HTTP error status codes are still valid responses. On acquisition failure body is empty.
+		web_response_error error = web_response_error::none;
 	};
 
 	struct web_host;

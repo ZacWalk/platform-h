@@ -33,7 +33,8 @@ somewhere other than Windows, it does not belong here.
 | Resources  | `embedded_resource_data` / `embedded_resource_text` |
 | Timers     | Performance counter, sleep, periodic callbacks |
 | Threading  | `run_async`, `run_ui` (marshal to the UI thread), `create_serial_executor` |
-| Processes  | `spawn_child_process`, `find_executable`, `quote_command_arg`, `try_lock_instance` |
+| Processes  | `spawn_child_process` with line callbacks, or the lower-level `process_spawn` / `process_read` / `process_write` for binary streams drained by the caller; `find_executable`, `quote_command_arg`, `try_lock_instance` |
+| Console    | `write_stdout`, `read_stdin`, `attach_console` for CLI and stdio-protocol modes |
 
 ### Backends
 
@@ -171,12 +172,13 @@ No app writes a `.rc` by hand and no app defines resource IDs.
 
 ## Build and test
 
-From an x64 Developer PowerShell:
+Requires Windows x64 and Visual Studio with the Desktop C++ workload. The
+vendored [dd](https://github.com/ZacWalk/dd) runtime locates Visual Studio and
+uses the CMake and Ninja that ship with it.
 
-```
-.\dd.ps1 test            # build and run the unit suite (the default command)
-.\dd.ps1 build -Config Debug
-.\dd.ps1 clean
+```powershell
+.\dd.ps1 build        # both configurations
+.\dd.ps1 test         # build and run the unit suite
 ```
 
 `dd.ps1` locates Visual Studio, enters the MSVC environment, and falls back to
@@ -190,3 +192,11 @@ storage paths, headless pool/executor concurrency and teardown, and audio at zer
 (XAudio2 needs no window) — both a sample buffer and the stream queue that apps
 pace themselves against. It skips the audio cases when the machine has no
 output device.
+
+## Documentation
+
+[AGENTS.md](AGENTS.md) — conventions for contributors and coding agents.
+
+## License
+
+[MIT](LICENSE)

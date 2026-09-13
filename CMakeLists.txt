@@ -48,4 +48,5 @@ if(PROJECT_IS_TOP_LEVEL)
     )
 
     add_test(NAME platform COMMAND platform_tests)
+    set_tests_properties(platform PROPERTIES LABELS platform)
 endif()

@@ -1,0 +1,15 @@
+{
+  "root": "C:\\code\\apps\\platform-h",
+  "directory": "C:\\code\\apps\\platform-h\\build\\release",
+  "manifestHash": "BA2153A73781A25FB9581521B8A65C06F002A6147D28D8C5673B1A81F5FA975B",
+  "generator": "Ninja",
+  "multiConfig": false,
+  "files": {
+    "C:\\code\\apps\\platform-h\\CMakePresets.json": "90B8A66331F70FDF7477B7D717BDAAF5770CD8E67E35FCB7428CE2907857702F"
+  },
+  "mapping": {
+    "configure": "release",
+    "build": "release",
+    "test": "release"
+  }
+}
