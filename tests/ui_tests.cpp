@@ -602,6 +602,162 @@ namespace
 			if (g.blocks[i]._char_pos < g.blocks[i - 1]._char_pos) ordered = false;
 		CHECK(ordered);
 	}
+
+	void test_buffer_set_text()
+	{
+		pf::ui::test::recording_view_host host;
+		pf::ui::text_buffer buf(host);
+
+		// A document always has at least one line, even when empty.
+		CHECK_EQ(buf.size(), 1u);
+		CHECK(buf.empty() == false);
+
+		buf.set_text("one\ntwo\nthree");
+		CHECK_EQ(buf.size(), 3u);
+		CHECK_STR(buf.str(), "one\ntwo\nthree");
+
+		// CRLF and LF both split, and neither survives into the line text.
+		buf.set_text("a\r\nb\r\nc");
+		CHECK_EQ(buf.size(), 3u);
+		CHECK_STR(buf.str(), "a\nb\nc");
+
+		// A trailing newline means a final empty line.
+		buf.set_text("x\n");
+		CHECK_EQ(buf.size(), 2u);
+
+		buf.set_text("");
+		CHECK_EQ(buf.size(), 1u);
+	}
+
+	void test_buffer_edit_and_undo()
+	{
+		pf::ui::test::recording_view_host host;
+		pf::ui::text_buffer buf(host);
+		buf.set_text("hello world");
+
+		CHECK(!buf.can_undo());
+
+		{
+			pf::ui::undo_group ug(buf);
+			buf.insert_text(ug, pf::ui::text_location{5, 0}, ",");
+		}
+
+		CHECK_STR(buf.str(), "hello, world");
+		CHECK(buf.can_undo());
+		CHECK(!buf.can_redo());
+
+		buf.undo();
+		CHECK_STR(buf.str(), "hello world");
+		CHECK(buf.can_redo());
+
+		buf.redo();
+		CHECK_STR(buf.str(), "hello, world");
+
+		// Deleting a range and putting it back through undo.
+		{
+			pf::ui::undo_group ug(buf);
+			buf.delete_text(ug, pf::ui::text_selection(0, 0, 7, 0));
+		}
+		CHECK_STR(buf.str(), "world");
+		buf.undo();
+		CHECK_STR(buf.str(), "hello, world");
+	}
+
+	void test_buffer_multiline_edit()
+	{
+		pf::ui::test::recording_view_host host;
+		pf::ui::text_buffer buf(host);
+		buf.set_text("first\nsecond");
+
+		// Inserting a newline splits a line and the host is told the count changed.
+		host.reset();
+		{
+			pf::ui::undo_group ug(buf);
+			buf.insert_text(ug, pf::ui::text_location{5, 0}, "\n");
+		}
+		CHECK_EQ(buf.size(), 3u);
+		CHECK(host.count_changes.size() > 0u);
+
+		buf.undo();
+		CHECK_EQ(buf.size(), 2u);
+		CHECK_STR(buf.str(), "first\nsecond");
+
+		// Joining two lines by deleting across the break.
+		{
+			pf::ui::undo_group ug(buf);
+			buf.delete_text(ug, pf::ui::text_selection(5, 0, 0, 1));
+		}
+		CHECK_EQ(buf.size(), 1u);
+		CHECK_STR(buf.str(), "firstsecond");
+	}
+
+	void test_buffer_utf8_movement()
+	{
+		pf::ui::test::recording_view_host host;
+		pf::ui::text_buffer buf(host);
+
+		// "aé€" — one, two and three bytes.
+		buf.set_text("a\xC3\xA9\xE2\x82\xAC");
+
+		buf.cursor_pos(pf::ui::text_location{0, 0});
+		buf.move_char_right(false);
+		CHECK_EQ(buf.cursor_pos().x, 1);
+		buf.move_char_right(false);
+		CHECK_EQ(buf.cursor_pos().x, 3);
+		buf.move_char_right(false);
+		CHECK_EQ(buf.cursor_pos().x, 6);
+
+		// And back again, never landing mid-character.
+		buf.move_char_left(false);
+		CHECK_EQ(buf.cursor_pos().x, 3);
+		buf.move_char_left(false);
+		CHECK_EQ(buf.cursor_pos().x, 1);
+		buf.move_char_left(false);
+		CHECK_EQ(buf.cursor_pos().x, 0);
+	}
+
+	void test_buffer_selection_and_readonly()
+	{
+		pf::ui::test::recording_view_host host;
+		pf::ui::text_buffer buf(host);
+		buf.set_text("alpha beta");
+
+		buf.select(pf::ui::text_selection(0, 0, 5, 0));
+		CHECK(buf.has_selection());
+		CHECK_STR(buf.copy(), "alpha");
+
+		const auto lines = buf.text(buf.selection());
+		CHECK_EQ(lines.size(), 1u);
+		CHECK_STR(lines[0], "alpha");
+
+		// A read-only buffer refuses edits but still allows selection.
+		buf.read_only(true);
+		CHECK(!buf.query_editable());
+		buf.edit_paste("nope");
+		CHECK_STR(buf.str(), "alpha beta");
+
+		buf.read_only(false);
+		CHECK(buf.query_editable());
+	}
+
+	void test_buffer_modified_flag()
+	{
+		pf::ui::test::recording_view_host host;
+		pf::ui::text_buffer buf(host);
+		buf.set_text("clean");
+		buf.set_modified(false);
+		CHECK(!buf.is_modified());
+
+		{
+			pf::ui::undo_group ug(buf);
+			buf.insert_text(ug, pf::ui::text_location{5, 0}, "!");
+		}
+		CHECK(buf.is_modified());
+
+		// Undoing back to where the document was saved makes it clean again.
+		buf.undo();
+		CHECK(!buf.is_modified());
+	}
 }
 
 // The backend's WinMain references these; a console test never calls them.
@@ -639,6 +795,12 @@ int main()
 	test_syntax_markdown();
 	test_syntax_plain();
 	test_syntax_bounds();
+	test_buffer_set_text();
+	test_buffer_edit_and_undo();
+	test_buffer_multiline_edit();
+	test_buffer_utf8_movement();
+	test_buffer_selection_and_readonly();
+	test_buffer_modified_flag();
 
 	std::printf("platform-ui tests: %s (%d checks, %d failures)\n",
 	            g_failures == 0 ? "PASS" : "FAIL", g_checks, g_failures);

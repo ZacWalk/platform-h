@@ -16,5 +16,8 @@
 #include "ui/text_types.h"
 #include "ui/view_host.h"
 #include "ui/syntax.h"
+#include "ui/spell.h"
+#include "ui/text_line.h"
+#include "ui/text_buffer.h"
 #include "ui/widgets.h"
 #include "ui/table_layout.h"
