@@ -18,11 +18,34 @@
 
 namespace pf::ui
 {
+	class doc_view;
+
+	// What a view needs from the application that is the same for every view: what
+	// the status bar says, what Escape does, how zoom is applied, and what a
+	// right-click offers. Injected rather than subclassed, so the view hierarchy
+	// stays the shared one and an application does not have to mirror it.
+	class view_context
+	{
+	public:
+		virtual ~view_context() = default;
+
+		[[nodiscard]] virtual std::string_view status_text() const { return {}; }
+		virtual void on_escape() {}
+		virtual void on_zoom(int delta) {}
+
+		// The view is passed so the application can offer a different menu for an
+		// editable pane than a read-only one, and can ask where the click landed.
+		virtual std::vector<pf::menu_command> popup_menu_items(doc_view& view, const pf::ipoint& at)
+		{
+			return {};
+		}
+	};
 	class text_view : public view_base
 	{
 	protected:
 		view_host& _host;
 		const theme& _theme;
+		view_context* _context = nullptr;
 
 		bool _focused = false;
 
@@ -37,16 +60,20 @@ namespace pf::ui
 		[[nodiscard]] int scroll_line() const { return _scroll_offset.y / _font_extent.cy; }
 		[[nodiscard]] int scroll_char() const { return _scroll_offset.x / _font_extent.cx; }
 
-		// What this view shows in its bar. Empty means no bar at all, so the default
-		// costs nothing; an application overrides it to report whatever it likes.
-		[[nodiscard]] virtual std::string_view status_text() const { return {}; }
+		// What this view shows in its bar. Empty means no bar at all. The default
+		// asks the application; a view that reports something of its own overrides it.
+		[[nodiscard]] virtual std::string_view status_text() const
+		{
+			return _context ? _context->status_text() : std::string_view{};
+		}
 
 		[[nodiscard]] int message_bar_height() const
 		{
 			return status_text().empty() ? 0 : _font_extent.cy + _font_extent.cy / 2;
 		}
 
-		text_view(view_host& host, const theme& th) : _host(host), _theme(th)
+		text_view(view_host& host, const theme& th, view_context* context = nullptr)
+			: _host(host), _theme(th), _context(context)
 		{
 		}
 
@@ -400,10 +427,12 @@ namespace pf::ui
 		// the other resizes a font the application owns. The view only routes the key.
 		virtual void on_escape()
 		{
+			if (_context) _context->on_escape();
 		}
 
 		virtual void zoom(const pf::window_frame_ptr& window, const int delta)
 		{
+			if (_context) _context->on_zoom(delta);
 		}
 
 		void scroll_to_line(const int y)

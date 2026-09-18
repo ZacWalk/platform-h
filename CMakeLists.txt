@@ -64,6 +64,7 @@ add_library(platform-ui STATIC
     src/ui/text_buffer.cpp
     src/ui/view_base.h
     src/ui/view_text.h
+    src/ui/view_doc.h
     src/ui/test_support.h
 )
 add_library(platform::ui ALIAS platform-ui)
