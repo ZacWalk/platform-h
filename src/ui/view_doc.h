@@ -887,7 +887,7 @@ namespace pf::ui
 			}
 		}
 
-		void on_left_button_up(const pf::window_frame_ptr& window, const pf::ipoint& point)
+		virtual void on_left_button_up(const pf::window_frame_ptr& window, const pf::ipoint& point)
 		{
 			if (_vscroll._tracking || _hscroll._tracking)
 			{
@@ -1252,7 +1252,7 @@ namespace pf::ui
 			return false;
 		}
 
-		void update_cursor(const pf::window_frame_ptr& window) const
+		virtual void update_cursor(const pf::window_frame_ptr& window) const
 		{
 			auto pt = pf::platform_cursor_pos();
 			pt = window->screen_to_client(pt);
@@ -1320,7 +1320,11 @@ namespace pf::ui
 			return 0;
 		}
 
-		int client_to_line(const pf::ipoint& point) const
+		// Where a click lands. A view that lays its text out non-uniformly — a
+		// markdown preview with heading fonts, say — overrides these three, and by
+		// doing so keeps hit testing, selection and the caret consistent with what
+		// it actually drew.
+		virtual int client_to_line(const pf::ipoint& point) const
 		{
 			const auto line_count = static_cast<int>(_doc->size());
 
@@ -1340,7 +1344,7 @@ namespace pf::ui
 			return std::clamp(line, 0, line_count - 1);
 		}
 
-		text_location client_to_text(const pf::ipoint& point) const
+		virtual text_location client_to_text(const pf::ipoint& point) const
 		{
 			const auto line_count = static_cast<int>(_doc->size());
 
@@ -1430,7 +1434,7 @@ namespace pf::ui
 			return pt;
 		}
 
-		pf::ipoint text_to_client(const text_location& point) const
+		virtual pf::ipoint text_to_client(const text_location& point) const
 		{
 			pf::ipoint pt;
 
@@ -1725,7 +1729,7 @@ namespace pf::ui
 		}
 
 		// Content-space Y position of a document line (includes top padding)
-		int line_offset(const int lineIndex) const
+		[[nodiscard]] virtual int line_offset(const int lineIndex) const
 		{
 			if (_word_wrap && !_wrap_line_y.empty())
 			{
@@ -1741,7 +1745,7 @@ namespace pf::ui
 			return top_content_padding() + vrow * _font_extent.cy;
 		}
 
-		int line_height(int lineIndex) const
+		[[nodiscard]] virtual int line_height(int lineIndex) const
 		{
 			if (_word_wrap && _wrap_offsets.size() > 1)
 			{

@@ -30,6 +30,7 @@ namespace pf::ui::md
 		heading3,
 		quote,
 		bullet,
+		numbered,
 		code,
 		rule,
 	};
@@ -46,6 +47,22 @@ namespace pf::ui::md
 	struct line
 	{
 		block kind = block::paragraph;
+		std::vector<span> spans;
+	};
+
+	// One line of source, analysed without discarding any of it.
+	//
+	// parse() builds a document by throwing the markers away, which is what a
+	// renderer that lays the model out afresh wants. A view that draws the source
+	// text itself — so a reader can select and copy exactly what was written — needs
+	// to know where the marker ends rather than never to see it. Every span points
+	// into the line it was handed, so a span's byte offset in that line is
+	// span.text.data() - line.data().
+	struct source_line
+	{
+		block kind = block::paragraph;
+		bool fence = false;    // the ``` line that opens or closes a code block
+		int content_start = 0; // byte offset of the text the marker introduces
 		std::vector<span> spans;
 	};
 
@@ -90,6 +107,17 @@ namespace pf::ui::md
 			if (c != '-' && c != '*' && c != '_') return false;
 			for (const char ch : s) if (ch != c) return false;
 			return true;
+		}
+
+		// Length of an ordered-list marker — "1. " or "2) " — and 0 when there is
+		// none. A digit run on its own is a number, not a list.
+		constexpr size_t ordered_marker(const std::string_view s)
+		{
+			size_t i = 0;
+			while (i < s.size() && s[i] >= '0' && s[i] <= '9') ++i;
+			if (i == 0 || i + 1 >= s.size()) return 0;
+			if (s[i] != '.' && s[i] != ')') return 0;
+			return s[i + 1] == ' ' ? i + 2 : 0;
 		}
 
 		constexpr int hex_digit(const char c)
@@ -400,6 +428,98 @@ namespace pf::ui::md
 		flush(s.size());
 	}
 
+	// Analyses one line of source in place. `in_fence` carries the fenced-code
+	// state from the previous line, which is the only thing a line's meaning
+	// depends on beyond its own text.
+	//
+	// Nothing is copied and nothing is dropped: `text` must outlive the spans.
+	inline void parse_source_line(std::string_view text, bool& in_fence, source_line& out)
+	{
+		out.kind = block::paragraph;
+		out.fence = false;
+		out.content_start = 0;
+		out.spans.clear();
+
+		if (!text.empty() && text.back() == '\r') text.remove_suffix(1);
+
+		const auto* const base = text.data();
+		const auto offset_of = [base](const std::string_view s) { return static_cast<int>(s.data() - base); };
+
+		auto body = text;
+		while (!body.empty() && (body.front() == ' ' || body.front() == '\t')) body.remove_prefix(1);
+		while (!body.empty() && (body.back() == ' ' || body.back() == '\t')) body.remove_suffix(1);
+
+		if (detail::starts_with(body, "```"))
+		{
+			in_fence = !in_fence;
+			out.fence = true;
+			out.kind = block::code;
+			out.content_start = offset_of(body);
+			return;
+		}
+
+		if (in_fence)
+		{
+			out.kind = block::code;
+			if (!text.empty()) out.spans.push_back(span{text, {}, false, false, true});
+			return;
+		}
+
+		if (body.empty())
+		{
+			out.kind = block::blank;
+			out.content_start = static_cast<int>(text.size());
+			return;
+		}
+
+		if (detail::is_rule(body))
+		{
+			out.kind = block::rule;
+			out.content_start = offset_of(body);
+			return;
+		}
+
+		if (detail::starts_with(body, "### "))
+		{
+			out.kind = block::heading3;
+			body.remove_prefix(4);
+		}
+		else if (detail::starts_with(body, "## "))
+		{
+			out.kind = block::heading2;
+			body.remove_prefix(3);
+		}
+		else if (detail::starts_with(body, "# "))
+		{
+			out.kind = block::heading1;
+			body.remove_prefix(2);
+		}
+		else if (detail::starts_with(body, "> "))
+		{
+			out.kind = block::quote;
+			body.remove_prefix(2);
+		}
+		else if (body == ">")
+		{
+			out.kind = block::quote;
+			body.remove_prefix(1);
+		}
+		else if (detail::starts_with(body, "- ") || detail::starts_with(body, "* ") ||
+			detail::starts_with(body, "+ "))
+		{
+			out.kind = block::bullet;
+			body.remove_prefix(2);
+		}
+		else if (const auto marker = detail::ordered_marker(body); marker > 0)
+		{
+			out.kind = block::numbered;
+			body.remove_prefix(marker);
+		}
+
+		out.content_start = offset_of(body);
+		parse_inline(body, out.spans);
+	}
+
 	// Takes ownership of the source text; the returned document's views point
 	// into it.
 	inline document parse(std::string source)
@@ -410,77 +530,22 @@ namespace pf::ui::md
 		const std::string_view all(*doc.text);
 		bool in_fence = false;
 		bool prev_blank = true; // drops leading blank lines
+		source_line parsed;
 
 		for (size_t pos = 0; pos <= all.size();)
 		{
 			const auto eol = all.find('\n', pos);
-			auto raw = all.substr(pos, eol == std::string_view::npos ? std::string_view::npos : eol - pos);
+			const auto raw = all.substr(pos, eol == std::string_view::npos ? std::string_view::npos : eol - pos);
 			pos = (eol == std::string_view::npos) ? all.size() + 1 : eol + 1;
 
-			if (!raw.empty() && raw.back() == '\r') raw.remove_suffix(1);
+			parse_source_line(raw, in_fence, parsed);
 
-			auto body = raw;
-			while (!body.empty() && (body.front() == ' ' || body.front() == '\t')) body.remove_prefix(1);
-			while (!body.empty() && (body.back() == ' ' || body.back() == '\t')) body.remove_suffix(1);
-
-			if (detail::starts_with(body, "```"))
-			{
-				in_fence = !in_fence;
-				continue;
-			}
+			if (parsed.fence) continue; // the fence itself is punctuation, not content
+			if (parsed.kind == block::blank && prev_blank) continue; // one blank separates; more add nothing
 
 			line l;
-
-			if (in_fence)
-			{
-				l.kind = block::code;
-				if (!raw.empty()) l.spans.push_back(span{raw, {}, false, false, true});
-			}
-			else if (body.empty())
-			{
-				if (prev_blank) continue; // one blank line separates; more add nothing
-				l.kind = block::blank;
-			}
-			else if (detail::is_rule(body))
-			{
-				l.kind = block::rule;
-			}
-			else
-			{
-				if (detail::starts_with(body, "### "))
-				{
-					l.kind = block::heading3;
-					body.remove_prefix(4);
-				}
-				else if (detail::starts_with(body, "## "))
-				{
-					l.kind = block::heading2;
-					body.remove_prefix(3);
-				}
-				else if (detail::starts_with(body, "# "))
-				{
-					l.kind = block::heading1;
-					body.remove_prefix(2);
-				}
-				else if (detail::starts_with(body, "> "))
-				{
-					l.kind = block::quote;
-					body.remove_prefix(2);
-				}
-				else if (body == ">")
-				{
-					l.kind = block::quote;
-					body = {};
-				}
-				else if (detail::starts_with(body, "- ") || detail::starts_with(body, "* ") ||
-					detail::starts_with(body, "+ "))
-				{
-					l.kind = block::bullet;
-					body.remove_prefix(2);
-				}
-
-				parse_inline(body, l.spans);
-			}
+			l.kind = parsed.kind;
+			l.spans = std::move(parsed.spans);
 
 			prev_blank = l.kind == block::blank;
 			doc.lines.push_back(std::move(l));

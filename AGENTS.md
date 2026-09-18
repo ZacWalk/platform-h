@@ -47,9 +47,18 @@ opens a file, never knows a path, and never names an application.
 | `src/core/platform_win.cpp` | Win32 backend: `WinMain`, message loop, GDI drawing, WIC, WinINet/WinHTTP, dialogs, clipboard, spell check, child processes |
 | `src/core/platform_win_audio.cpp` | XAudio2 backend, isolated from the rest |
 | `src/ui/ui.h` | platform-ui umbrella header |
-| `src/ui/theme.h` | The `pf::ui::colors` table |
+| `src/ui/theme.h` / `.cpp` | The `pf::ui::colors` table, the `theme` metrics, the style palette and the heading fonts |
+| `src/ui/text_types.h` | `text_location`, `text_selection`, `text_style`, `text_block`, `highlight_fn` |
+| `src/ui/view_host.h` | What a view asks of the application: invalidation, `ensure_visible`, status |
 | `src/ui/widgets.h` | `edit_box`, `caret_blinker`, `splitter`, `custom_scrollbar`, `edit_box_widget` |
 | `src/ui/table_layout.h` / `.cpp` | Table cell parsing and rendering, shared by the markdown and CSV views |
+| `src/ui/syntax.h` / `.cpp` | The syntax highlighters; language choice is the caller's |
+| `src/ui/spell.h` / `.cpp` | The process-wide spell checker and its cache |
+| `src/ui/text_line.h`, `text_buffer.h` / `.cpp` | The UTF-8 line and the editing model: lines, selection, undo |
+| `src/ui/markdown.h` | `pf::ui::md` — the Markdown model, its parser and the HTML reducer |
+| `src/ui/view_base.h` → `view_text.h` → `view_doc.h` | The view hierarchy: scrolling, selection and the clipboard, then the caret, wrap and hit testing |
+| `src/ui/view_doc_edit.h`, `view_doc_readonly.h`, `view_markdown.h` | The views an application shows: editable, read-only, and rendered Markdown |
+| `src/ui/test_support.h` | Headless fakes — `measure_context`, `draw_context`, `view_host`, `window_frame` |
 | `cmake/platform_app.cmake` | `platform_add_app()` — the function apps use to declare themselves |
 | `cmake/embed_resources.cmake` | Turns data files into a generated C++ byte-array TU |
 | `cmake/app.manifest.in` | The manifest every app gets |

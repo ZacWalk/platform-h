@@ -304,7 +304,10 @@ namespace pf::ui::test
 		{
 		}
 
-		uint32_t set_timer(uint32_t, uint32_t) override { return 0; }
+		// A real window answers with the timer's id, and a view reads a zero as
+		// "no timer available" and abandons what it was starting — drag selection,
+		// for one. Answering honestly is what makes those paths testable.
+		uint32_t set_timer(const uint32_t id, uint32_t) override { return id; }
 
 		void kill_timer(uint32_t) override
 		{

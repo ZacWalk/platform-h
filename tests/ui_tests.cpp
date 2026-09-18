@@ -7,6 +7,7 @@
 #include "ui/view_doc.h"
 #include "ui/view_doc_edit.h"
 #include "ui/view_doc_readonly.h"
+#include "ui/view_markdown.h"
 #include "ui/test_support.h"
 
 #include <cstdio>
@@ -1084,6 +1085,366 @@ namespace
 		// An empty document is legal and has no lines.
 		CHECK(md::parse("").empty());
 	}
+
+	void test_markdown_source_lines()
+	{
+		namespace md = pf::ui::md;
+
+		// A view that draws the source needs every byte accounted for: the kind of
+		// the line, where its marker ends, and spans it can find by offset.
+		md::source_line parsed;
+		auto in_fence = false;
+
+		const std::string_view heading = "## A heading";
+		md::parse_source_line(heading, in_fence, parsed);
+		CHECK(parsed.kind == md::block::heading2);
+		CHECK_EQ(parsed.content_start, 3);
+		CHECK(!parsed.spans.empty());
+		CHECK_EQ(static_cast<int>(parsed.spans.front().text.data() - heading.data()), 3);
+
+		const std::string_view bullet = "  - an item";
+		md::parse_source_line(bullet, in_fence, parsed);
+		CHECK(parsed.kind == md::block::bullet);
+		CHECK_EQ(parsed.content_start, 4);
+
+		// Ordered lists are a list too — the marker is the number, not a word.
+		const std::string_view numbered = "12. step";
+		md::parse_source_line(numbered, in_fence, parsed);
+		CHECK(parsed.kind == md::block::numbered);
+		CHECK_EQ(parsed.content_start, 4);
+
+		md::parse_source_line("2026 was a year", in_fence, parsed);
+		CHECK(parsed.kind == md::block::paragraph);
+
+		// A link reports both halves as views into the line it was given, which is
+		// how a click on either is resolved back to a target.
+		const std::string_view link = "see [docs](https://example.invalid/) now";
+		md::parse_source_line(link, in_fence, parsed);
+		auto found = false;
+		for (const auto& span : parsed.spans)
+		{
+			if (span.link.empty()) continue;
+			found = true;
+			CHECK_EQ(static_cast<int>(span.text.data() - link.data()), 5);
+			CHECK_EQ(static_cast<int>(span.link.data() - link.data()), 11);
+		}
+		CHECK(found);
+
+		// The fence line is punctuation; the lines it encloses are code.
+		md::parse_source_line("```cpp", in_fence, parsed);
+		CHECK(parsed.fence);
+		CHECK(in_fence);
+		md::parse_source_line("int x = 1;", in_fence, parsed);
+		CHECK(parsed.kind == md::block::code);
+		CHECK(in_fence);
+		md::parse_source_line("```", in_fence, parsed);
+		CHECK(parsed.fence);
+		CHECK(!in_fence);
+
+		// And the document parser is the same parser, so an ordered list survives
+		// into the model as well.
+		const auto doc = md::parse("1. first\n2. second\n");
+		CHECK_EQ(doc.lines.size(), 2u);
+		CHECK(doc.lines[0].kind == md::block::numbered);
+		CHECK(!doc.lines[0].spans.empty());
+		CHECK_STR(doc.lines[0].spans.front().text, "first");
+	}
+
+	// The markdown view, driven headlessly. 8x16 cells, so a column is 8 pixels
+	// wide and a body row 16 tall; heading rows are measured the same because the
+	// fake metrics are a fixed grid.
+	struct markdown_probe : pf::ui::markdown_view
+	{
+		using pf::ui::markdown_view::markdown_view;
+		using pf::ui::markdown_view::text_to_client;
+		using pf::ui::markdown_view::on_left_button_up;
+	};
+
+	pf::ui::text_buffer_ptr show_markdown(markdown_probe& view, pf::ui::view_host& host,
+	                                      pf::window_frame_ptr& frame, const std::string_view text,
+	                                      const pf::isize extent = {480, 320})
+	{
+		const auto buf = std::make_shared<pf::ui::text_buffer>(host);
+		buf->set_text(text);
+		view.set_buffer(buf, {});
+
+		pf::ui::test::fake_measure_context measure;
+		view.handle_size(frame, extent, measure);
+		view.layout();
+		return buf;
+	}
+
+	void test_markdown_view_layout()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		markdown_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		const auto buf = show_markdown(view, host, frame, "# Title\nbody text\n## Second\nmore body");
+
+		// Every source line keeps its position: the view shows the text, not a
+		// re-flowed copy of it, so nothing has moved out from under a selection.
+		CHECK_EQ(buf->size(), 4u);
+
+		// Lines are laid out in order and a heading is taller than the body line
+		// under it, because a heading is drawn in a bigger font with room around it.
+		const auto title_top = view.text_to_client({0, 0}).y;
+		const auto body_top = view.text_to_client({0, 1}).y;
+		const auto second_top = view.text_to_client({0, 2}).y;
+		CHECK(title_top < body_top);
+		CHECK(body_top < second_top);
+		CHECK(second_top - body_top > body_top - title_top);
+
+		// A point converted from a position and hit-tested back must come out the
+		// same. This is the round trip every click relies on, and it is the part
+		// the old fork could not do at all — it disabled drag selection instead.
+		for (const auto loc : {pf::ui::text_location{0, 0}, pf::ui::text_location{4, 1},
+		                       pf::ui::text_location{3, 2}, pf::ui::text_location{9, 3}})
+		{
+			const auto point = view.text_to_client(loc);
+			const auto back = view.text_at(point);
+			CHECK_EQ(back.y, loc.y);
+			CHECK_EQ(back.x, loc.x);
+		}
+
+		CHECK(view.allows_drag_selection());
+	}
+
+	void test_markdown_view_selects_the_source()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		markdown_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		show_markdown(view, host, frame, "# Title\n**bold** words");
+
+		// What is copied is what is in the file, markers and all: the view renders
+		// the source rather than a reduction of it.
+		view.set_selection(pf::ui::text_selection(0, 0, 7, 0));
+		CHECK(view.can_copy_text());
+		CHECK_STR(view.select_text(), "# Title");
+
+		view.select_all_text();
+		CHECK_STR(view.select_text(), "# Title\r\n**bold** words");
+
+		// Read-only means read-only, but copying is still reading.
+		CHECK(!view.can_cut_text());
+		CHECK(!view.can_paste_text());
+	}
+
+	void test_markdown_view_paints_markup()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		markdown_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		show_markdown(view, host, frame, "# Title\n- item one\n\n| a | b |\n| - | - |\n| 1 | 2 |\n");
+
+		pf::ui::test::fake_draw_context draw{pf::irect(0, 0, 480, 320)};
+		view.handle_paint(frame, draw);
+
+		const auto drawn = draw.drawn_text();
+		CHECK(drawn.find("Title") != std::string::npos);
+		CHECK(drawn.find("item one") != std::string::npos);
+
+		// The markers are drawn, not hidden: a heading that lost its '#' would be
+		// text the selection could not account for.
+		auto marker_color = theme.style_color(pf::ui::text_style::md_marker);
+		auto saw_marker = false;
+		auto saw_heading_color = false;
+		for (const auto& t : draw.texts)
+		{
+			if (t.text.find('#') != std::string::npos && t.color == marker_color) saw_marker = true;
+			if (t.color == theme.style_color(pf::ui::text_style::md_heading1)) saw_heading_color = true;
+		}
+		CHECK(saw_marker);
+		CHECK(saw_heading_color);
+
+		// The table is drawn through table_layout, which pads its cells into their
+		// columns — so the row is not simply the source line echoed back.
+		auto saw_separator = false;
+		for (const auto& t : draw.texts)
+			if (t.text.find("---") != std::string::npos) saw_separator = true;
+		CHECK(saw_separator);
+	}
+
+	void test_markdown_view_links()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		markdown_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		show_markdown(view, host, frame, "intro\nsee [docs](https://example.invalid/x) now\n");
+
+		// Clicking the link text or its URL both answer with the target; the words
+		// around them do not.
+		const auto link_point = view.text_to_client({6, 1});  // inside "docs"
+		const auto url_point = view.text_to_client({14, 1});  // inside the URL
+		const auto plain_point = view.text_to_client({1, 1}); // inside "see"
+
+		CHECK_STR(view.link_at(link_point), "https://example.invalid/x");
+		CHECK_STR(view.link_at(url_point), "https://example.invalid/x");
+		CHECK_STR(view.link_at(plain_point), "");
+		CHECK_STR(view.link_at(view.text_to_client({2, 0})), "");
+
+		// Activation is injected: the view reports the target and the application
+		// decides what a target means.
+		std::string followed;
+		CHECK(!view.has_link_handler());
+		view.set_link_handler([&](const std::string_view target) { followed = target; });
+		CHECK(view.has_link_handler());
+
+		const auto click = [&](const pf::ipoint& at)
+		{
+			pf::mouse_params params;
+			params.point = at;
+			params.left_button = true;
+			view.handle_mouse(frame, pf::mouse_message_type::left_button_down, params);
+			view.handle_mouse(frame, pf::mouse_message_type::left_button_up, params);
+		};
+
+		click(link_point);
+		CHECK_STR(followed, "https://example.invalid/x");
+
+		// A press that ended somewhere else is a drag, not a click, so it follows
+		// nothing even when it happens to release over a link.
+		followed.clear();
+		pf::mouse_params press;
+		press.point = plain_point;
+		press.left_button = true;
+		view.handle_mouse(frame, pf::mouse_message_type::left_button_down, press);
+		view.on_left_button_up(frame, link_point);
+		CHECK_STR(followed, "");
+
+		// And a drag that selected text keeps the text it selected rather than
+		// following the link it happened to end on.
+		followed.clear();
+		view.set_selection({});
+		pf::mouse_params drag;
+		drag.point = link_point;
+		drag.left_button = true;
+		view.handle_mouse(frame, pf::mouse_message_type::left_button_down, press);
+		view.handle_mouse(frame, pf::mouse_message_type::mouse_move, drag);
+		view.handle_mouse(frame, pf::mouse_message_type::left_button_up, drag);
+		CHECK(view.has_current_selection());
+		CHECK_STR(followed, "");
+
+		// Empty space beside the text is not the text: a click past the end of the
+		// line, or below the last one, follows nothing.
+		followed.clear();
+		view.set_selection({});
+		click({link_point.x, link_point.y + 5000});
+		CHECK_STR(followed, "");
+		click({5000, link_point.y});
+		CHECK_STR(followed, "");
+		CHECK_STR(view.link_at({5000, link_point.y}), "");
+	}
+
+	void test_markdown_view_tables()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		markdown_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		// "café" is four characters in five bytes, and its column is exactly four
+		// wide: a cell wrapped by bytes would split the é in half.
+		const auto buf = show_markdown(view, host, frame,
+		                               "| name | note |\n| ---- | ---- |\n| caf\xC3\xA9 | ok |\nafter");
+
+		pf::ui::test::fake_draw_context draw{pf::irect(0, 0, 480, 320)};
+		view.handle_paint(frame, draw);
+
+		for (const auto& t : draw.texts)
+			CHECK(t.text.empty() || !pf::is_utf8_continuation(t.text.front()));
+
+		// The rendered row is padded into its columns, so a drag over it selects
+		// whole source lines rather than bytes that are not where they look.
+		const auto row_y = view.text_to_client({0, 2}).y;
+		CHECK_EQ(view.text_at({0, row_y}).y, 2);
+		CHECK_EQ(view.text_at({0, row_y}).x, 0);
+		CHECK_EQ(view.text_at({470, row_y}).x, static_cast<int>((*buf)[2].size()));
+
+		// A link cannot be hit inside a table for the same reason.
+		CHECK_STR(view.link_at({100, row_y}), "");
+
+		// A selected row is drawn selected: the whole row, because half of a padded
+		// cell is not an honest thing to shade.
+		view.set_selection(pf::ui::text_selection(0, 2, 0, 3));
+		draw.reset();
+		view.handle_paint(frame, draw);
+
+		auto saw_selected_cell = false;
+		for (const auto& t : draw.texts)
+			if (t.text.find("ok") != std::string::npos &&
+				t.background == theme.style_color(pf::ui::text_style::sel_bkgnd))
+				saw_selected_cell = true;
+		CHECK(saw_selected_cell);
+	}
+
+	void test_markdown_view_wraps_without_touching_the_buffer()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		markdown_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		const std::string_view source =
+			"- aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm nnn ooo ppp qqq rrr\nafter";
+
+		// 160 pixels is 20 columns, so the bullet cannot fit on one row.
+		const auto buf = show_markdown(view, host, frame, source, {160, 320});
+
+		CHECK_EQ(buf->size(), 2u);
+		CHECK_STR(buf->str(), source);
+
+		// The wrapped line pushes what follows it well down the view.
+		const auto wrapped_top = view.text_to_client({0, 0}).y;
+		const auto next_top = view.text_to_client({0, 1}).y;
+		CHECK(next_top - wrapped_top > 16 * 3);
+
+		// A continuation row is indented under the item's text rather than under
+		// its bullet, and hit testing follows it there.
+		const auto tail = view.text_to_client({static_cast<int>(source.find("rrr")), 0});
+		CHECK(tail.x > view.text_to_client({0, 0}).x);
+		CHECK(tail.y > wrapped_top);
+
+		const auto back = view.text_at(tail);
+		CHECK_EQ(back.y, 0);
+		CHECK_EQ(back.x, static_cast<int>(source.find("rrr")));
+	}
+
+	void test_markdown_view_utf8_positions()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		markdown_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		// "héllo wörld" — multi-byte characters, so a column is not a byte.
+		show_markdown(view, host, frame, "h\xC3\xA9llo w\xC3\xB6rld\n");
+
+		// The second character is two bytes wide but one column across, and a click
+		// on it lands on its first byte rather than inside it.
+		const auto point = view.text_to_client({1, 0});
+		CHECK_EQ(point.x, view.text_to_client({0, 0}).x + 8);
+		CHECK_EQ(view.text_at(point).x, 1);
+
+		const auto after = view.text_to_client({3, 0});
+		CHECK_EQ(after.x, view.text_to_client({0, 0}).x + 16);
+		CHECK_EQ(view.text_at(after).x, 3);
+	}
 }
 
 // The backend's WinMain references these; a console test never calls them.
@@ -1137,6 +1498,14 @@ int main()
 	test_markdown_escape();
 	test_markdown_from_html();
 	test_markdown_document_owns_its_text();
+	test_markdown_source_lines();
+	test_markdown_view_layout();
+	test_markdown_view_selects_the_source();
+	test_markdown_view_paints_markup();
+	test_markdown_view_links();
+	test_markdown_view_tables();
+	test_markdown_view_wraps_without_touching_the_buffer();
+	test_markdown_view_utf8_positions();
 
 	std::printf("platform-ui tests: %s (%d checks, %d failures)\n",
 	            g_failures == 0 ? "PASS" : "FAIL", g_checks, g_failures);
