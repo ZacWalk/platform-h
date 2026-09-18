@@ -1,15 +1,15 @@
 {
-  "files": {
-    "C:\\code\\apps\\platform-h\\CMakePresets.json": "90B8A66331F70FDF7477B7D717BDAAF5770CD8E67E35FCB7428CE2907857702F"
-  },
-  "root": "C:\\code\\apps\\platform-h",
-  "multiConfig": false,
-  "manifestHash": "932640E6DD79AF5BFF2735A0B4022A531690B8DE748E1D59D076F75A52374E6B",
-  "directory": "C:\\code\\apps\\platform-h\\build\\debug",
   "generator": "Ninja",
+  "directory": "C:\\code\\apps\\platform-h\\build\\debug",
   "mapping": {
     "test": "debug",
-    "configure": "debug",
-    "build": "debug"
+    "build": "debug",
+    "configure": "debug"
+  },
+  "root": "C:\\code\\apps\\platform-h",
+  "manifestHash": "932640E6DD79AF5BFF2735A0B4022A531690B8DE748E1D59D076F75A52374E6B",
+  "multiConfig": false,
+  "files": {
+    "C:\\code\\apps\\platform-h\\CMakePresets.json": "90B8A66331F70FDF7477B7D717BDAAF5770CD8E67E35FCB7428CE2907857702F"
   }
 }

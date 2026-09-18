@@ -4,6 +4,7 @@
 
 #include "platform.h"
 #include "ui/ui.h"
+#include "ui/test_support.h"
 
 #include <cstdio>
 #include <string>
@@ -290,6 +291,130 @@ namespace
 		CHECK(bottom.start + bottom.length <= 200);
 		CHECK(bottom.length >= bar.thumb_thickness());
 	}
+
+	void test_text_location()
+	{
+		using pf::ui::text_location;
+		using pf::ui::text_selection;
+
+		// Ordering is by line first, then by byte offset within the line.
+		CHECK(text_location(0, 1) < text_location(5, 2));
+		CHECK(text_location(2, 3) < text_location(7, 3));
+		CHECK(text_location(4, 4) == text_location(4, 4));
+		CHECK(!(text_location(9, 1) < text_location(2, 1)));
+
+		// A backwards drag is still a valid selection; normalize orders it.
+		const text_selection backwards({8, 5}, {2, 1});
+		CHECK(!backwards.empty());
+		const auto forwards = backwards.normalize();
+		CHECK(forwards._start == text_location(2, 1));
+		CHECK(forwards._end == text_location(8, 5));
+
+		// Normalizing an ordered selection leaves it alone.
+		const text_selection ordered({1, 1}, {3, 3});
+		CHECK(ordered.normalize() == ordered);
+
+		// A caret is an empty selection at one point.
+		const text_selection caret(text_location{4, 2});
+		CHECK(caret.empty());
+		CHECK(caret.is_valid());
+
+		// Negative coordinates mark "no selection" rather than a position.
+		CHECK(!text_selection(-1, -1, -1, -1).is_valid());
+	}
+
+	void test_theme()
+	{
+		const pf::ui::theme t;
+		using ts = pf::ui::text_style;
+
+		// Styles are distinguished, not collapsed onto one foreground colour.
+		CHECK(!(t.style_color(ts::code_keyword) == t.style_color(ts::code_comment)));
+		CHECK(!(t.style_color(ts::md_heading1) == t.style_color(ts::md_heading2)));
+
+		// The chrome defaults are the palette both applications shipped.
+		CHECK(t.window_background == pf::ui::colors::window_background);
+		CHECK(t.handle == pf::ui::colors::handle_color);
+		CHECK(t.style_color(ts::main_wnd_clr) == pf::ui::colors::main_wnd_clr);
+
+		// An application repalettes by overriding one function.
+		struct light_theme : pf::ui::theme
+		{
+			pf::color_t style_color(const ts s) const override
+			{
+				return s == ts::normal_text ? pf::color_t(0, 0, 0) : pf::ui::theme::style_color(s);
+			}
+		};
+
+		const light_theme light;
+		CHECK(light.style_color(ts::normal_text) == pf::color_t(0, 0, 0));
+		// Everything it does not override still comes from the base.
+		CHECK(light.style_color(ts::code_keyword) == t.style_color(ts::code_keyword));
+	}
+
+	void test_headless_measure()
+	{
+		const pf::ui::test::fake_measure_context measure;
+		const pf::font any{12, pf::font_name::consolas};
+
+		CHECK_EQ(measure.measure_char(any).cx, 8);
+		CHECK_EQ(measure.measure_text("abcd", any).cx, 32);
+
+		// Measurement counts code points, not bytes, so "aé€" is three cells wide
+		// rather than six. A wrap test must not change meaning with the encoding.
+		CHECK_EQ(measure.measure_text("a\xC3\xA9\xE2\x82\xAC", any).cx, 24);
+		CHECK_EQ(measure.measure_text("", any).cx, 0);
+	}
+
+	void test_headless_draw()
+	{
+		pf::ui::test::fake_draw_context draw;
+		const pf::font any{12, pf::font_name::consolas};
+
+		draw.fill_solid_rect(pf::irect(0, 0, 10, 10), pf::color_t(1, 2, 3));
+		draw.draw_text(4, 8, pf::irect(4, 8, 36, 24), "hello", any,
+		               pf::color_t(255, 255, 255), pf::color_t(0, 0, 0));
+		draw.draw_text(4, 24, pf::irect(4, 24, 36, 40), " world", any,
+		               pf::color_t(255, 255, 255), pf::color_t(0, 0, 0));
+
+		CHECK_EQ(draw.fills.size(), 1u);
+		CHECK_EQ(draw.texts.size(), 2u);
+		CHECK_EQ(draw.texts[0].x, 4);
+		CHECK_EQ(draw.texts[1].y, 24);
+		CHECK_STR(draw.drawn_text(), "hello world");
+
+		// The x/y/cx/cy overload records the same rectangle as the irect one.
+		draw.reset();
+		draw.fill_solid_rect(2, 3, 5, 7, pf::color_t(9, 9, 9));
+		CHECK_EQ(draw.fills[0].rect.left, 2);
+		CHECK_EQ(draw.fills[0].rect.right, 7);
+		CHECK_EQ(draw.fills[0].rect.bottom, 10);
+		CHECK_EQ(draw.drawn_text().size(), 0u);
+	}
+
+	void test_recording_host()
+	{
+		pf::ui::test::recording_view_host host;
+
+		host.lines_changed(3, 5);
+		host.invalidate_lines(1, 2);
+		host.line_count_changed(7, -2);
+		host.ensure_visible(pf::ui::text_location{4, 9});
+		host.invalidate_view();
+
+		CHECK_EQ(host.changed.size(), 1u);
+		CHECK_EQ(host.changed[0].start, 3);
+		CHECK_EQ(host.invalidated.size(), 1u);
+		CHECK_EQ(host.count_changes.size(), 1u);
+		CHECK_EQ(host.count_changes[0].second, -2);
+		CHECK_EQ(host.ensured.size(), 1u);
+		CHECK(host.ensured[0] == pf::ui::text_location(4, 9));
+		CHECK_EQ(host.invalidate_view_count, 1);
+
+		host.reset();
+		CHECK_EQ(host.changed.size(), 0u);
+		CHECK_EQ(host.invalidate_view_count, 0);
+	}
 }
 
 // The backend's WinMain references these; a console test never calls them.
@@ -316,6 +441,11 @@ int main()
 	test_table_widths();
 	test_splitter_geometry();
 	test_scrollbar_thumb();
+	test_text_location();
+	test_theme();
+	test_headless_measure();
+	test_headless_draw();
+	test_recording_host();
 
 	std::printf("platform-ui tests: %s (%d checks, %d failures)\n",
 	            g_failures == 0 ? "PASS" : "FAIL", g_checks, g_failures);

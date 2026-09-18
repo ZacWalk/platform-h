@@ -1,0 +1,68 @@
+// theme.cpp — the default dark palette.
+//
+// Lifted from rethinkify-app's style_to_color so the presentation is unchanged
+// for the application it came from, and so an application adopting platform-ui
+// gets something usable without writing a theme first.
+
+#include "platform.h"
+#include "ui/theme.h"
+
+namespace pf::ui
+{
+	pf::color_t theme::style_color(const text_style s) const
+	{
+		switch (s)
+		{
+		case text_style::white_space:
+		case text_style::main_wnd_clr:
+			return colors::main_wnd_clr;
+		case text_style::tool_wnd_clr:
+			return colors::tool_wnd_clr;
+		case text_style::normal_bkgnd:
+			return pf::color_t(30, 30, 30);
+		case text_style::normal_text:
+			return pf::color_t(222, 222, 222);
+		case text_style::sel_margin:
+			return pf::color_t(44, 44, 44);
+		case text_style::code_preprocessor:
+			return pf::color_t(133, 133, 211);
+		case text_style::code_comment:
+			return pf::color_t(128, 222, 128);
+		case text_style::code_number:
+		case text_style::code_string:
+			return pf::color_t(244, 244, 144);
+		case text_style::code_operator:
+			return pf::color_t(128, 255, 128);
+		case text_style::code_keyword:
+			return pf::color_t(128, 128, 255);
+		case text_style::sel_bkgnd:
+			return pf::color_t(88, 88, 88);
+		case text_style::sel_text:
+			return pf::color_t(255, 255, 255);
+		case text_style::error_bkgnd:
+			return pf::color_t(128, 0, 0);
+		case text_style::error_text:
+			return pf::color_t(255, 100, 100);
+		case text_style::md_heading1:
+			return pf::color_t(100, 200, 255);
+		case text_style::md_heading2:
+			return pf::color_t(140, 180, 255);
+		case text_style::md_heading3:
+			return pf::color_t(180, 160, 255);
+		case text_style::md_bold:
+			return pf::color_t(255, 255, 255);
+		case text_style::md_italic:
+			return pf::color_t(180, 220, 180);
+		case text_style::md_link_text:
+			return pf::color_t(100, 180, 255);
+		case text_style::md_link_url:
+			return pf::color_t(120, 120, 120);
+		case text_style::md_marker:
+			return pf::color_t(80, 80, 80);
+		case text_style::md_bullet:
+			return pf::color_t(200, 200, 100);
+		}
+
+		return pf::color_t(222, 222, 222);
+	}
+}

@@ -48,10 +48,14 @@ endif()
 # link it, so the games and viewers keep their current size.
 add_library(platform-ui STATIC
     src/ui/ui.h
+    src/ui/text_types.h
     src/ui/theme.h
+    src/ui/theme.cpp
+    src/ui/view_host.h
     src/ui/widgets.h
     src/ui/table_layout.h
     src/ui/table_layout.cpp
+    src/ui/test_support.h
 )
 add_library(platform::ui ALIAS platform-ui)
 
