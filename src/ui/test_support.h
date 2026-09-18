@@ -252,4 +252,142 @@ namespace pf::ui::test
 			++invalidate_status_count;
 		}
 	};
+
+	// A window that does nothing, so a view can be driven without one.
+	//
+	// pf::window_frame is the one interface a view cannot avoid: it needs focus,
+	// capture, timers and the clipboard. Every application that wants to test a view
+	// has had to write this stub, and has had to update it whenever the interface
+	// grew — so it lives here, once.
+	//
+	// The parts a test usually cares about are recorded rather than discarded: the
+	// focus flag, the last popup menu, and whatever was put on the clipboard.
+	class fake_window_frame final : public pf::window_frame
+	{
+	public:
+		inline static const fake_window_frame* focused_window = nullptr;
+
+		std::vector<pf::menu_command> popup_items;
+		pf::ipoint popup_point;
+		std::string clipboard;
+		int invalidate_count = 0;
+
+		~fake_window_frame() override
+		{
+			if (focused_window == this)
+				focused_window = nullptr;
+		}
+
+		void set_reactor(pf::frame_reactor_ptr) override
+		{
+		}
+
+		void notify_size() override
+		{
+		}
+
+		[[nodiscard]] pf::irect get_client_rect() const override { return {}; }
+
+		void invalidate() override { ++invalidate_count; }
+
+		void invalidate_rect(const pf::irect&) override { ++invalidate_count; }
+
+		void set_focus() override { focused_window = this; }
+
+		[[nodiscard]] bool has_focus() const override { return focused_window == this; }
+
+		void set_capture() override
+		{
+		}
+
+		void release_capture() override
+		{
+		}
+
+		uint32_t set_timer(uint32_t, uint32_t) override { return 0; }
+
+		void kill_timer(uint32_t) override
+		{
+		}
+
+		[[nodiscard]] pf::ipoint screen_to_client(const pf::ipoint pt) const override { return pt; }
+
+		void set_cursor_shape(pf::cursor_shape) override
+		{
+		}
+
+		void move_window(const pf::irect&) override
+		{
+		}
+
+		void show(bool) override
+		{
+		}
+
+		[[nodiscard]] bool is_visible() const override { return false; }
+
+		void set_text(std::string_view) override
+		{
+		}
+
+		[[nodiscard]] placement get_placement() const override { return {}; }
+
+		void set_placement(const placement&) override
+		{
+		}
+
+		void track_mouse_leave() override
+		{
+		}
+
+		[[nodiscard]] bool is_key_down(unsigned int) const override { return false; }
+		[[nodiscard]] bool is_key_down_async(unsigned int) const override { return false; }
+
+		pf::window_frame_ptr create_child(std::string_view, uint32_t, pf::color_t) const & override
+		{
+			return std::make_shared<fake_window_frame>();
+		}
+
+		void close() override
+		{
+		}
+
+		// A private clipboard, so a test never disturbs the machine's.
+		std::string text_from_clipboard() override { return clipboard; }
+
+		bool text_to_clipboard(const std::string_view text) override
+		{
+			clipboard = text;
+			return true;
+		}
+
+		void present_pixels(const uint32_t*, int, int) override
+		{
+		}
+
+		pf::toolbar_frame_ptr create_address_bar(const pf::address_bar_config&) override { return nullptr; }
+
+		int message_box(std::string_view, std::string_view, uint32_t) override { return 0; }
+
+		void set_menu(std::vector<pf::menu_command>) override
+		{
+		}
+
+		[[nodiscard]] std::unique_ptr<pf::measure_context> create_measure_context() const override
+		{
+			return std::make_unique<fake_measure_context>();
+		}
+
+		void show_popup_menu(const std::vector<pf::menu_command>& items, const pf::ipoint& point) override
+		{
+			popup_items = items;
+			popup_point = point;
+		}
+
+		[[nodiscard]] double get_dpi_scale() const override { return 1.0; }
+
+		void accept_drop_files(bool) override
+		{
+		}
+	};
 }

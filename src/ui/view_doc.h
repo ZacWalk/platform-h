@@ -262,7 +262,7 @@ namespace pf::ui
 			{
 				const auto len = static_cast<int>(line_text.size());
 
-				auto can_spell_check_style = [](const style color)
+				auto can_spell_check_style = [](const text_style color)
 				{
 					switch (color)
 					{
@@ -278,7 +278,7 @@ namespace pf::ui
 						return false;
 					}
 				};
-				auto append_block = [](std::vector<text_block>& blocks, const int pos, const style color)
+				auto append_block = [](std::vector<text_block>& blocks, const int pos, const text_style color)
 				{
 					if (!blocks.empty())
 					{
@@ -298,7 +298,7 @@ namespace pf::ui
 				auto& spell_blocks = _spell_blocks;
 				spell_blocks.clear();
 
-				auto append_segment = [&](const int start, const int end, const style base_color)
+				auto append_segment = [&](const int start, const int end, const text_style base_color)
 				{
 					if (start >= end)
 						return;
@@ -470,7 +470,7 @@ namespace pf::ui
 			return std::max(1, (_view_extent.cx - text_left()) / _font_extent.cx);
 		}
 
-		void calc_line_wrap_into(const document_line& line, std::vector<int>& breaks)
+		void calc_line_wrap_into(const text_line& line, std::vector<int>& breaks)
 		{
 			breaks.clear();
 
@@ -1816,7 +1816,7 @@ namespace pf::ui
 			}
 		}
 
-		void draw_line(pf::draw_context& draw, pf::ipoint& ptOrigin, const pf::irect& rcClip, style nColorIndex,
+		void draw_line(pf::draw_context& draw, pf::ipoint& ptOrigin, const pf::irect& rcClip, text_style nColorIndex,
 		               const std::string_view pszChars, const int nOffset, const int nCount,
 		               const text_location& ptTextPos,
 		               const pf::font& f, const pf::color_t text_color, const pf::color_t bg_color) const
@@ -1902,7 +1902,7 @@ namespace pf::ui
 				pf::ipoint origin(row_rc.left, row_y);
 
 				// Lambda to draw a segment clipped to this visual row
-				auto draw_clipped = [&](const int seg_start, const int seg_end, const style color)
+				auto draw_clipped = [&](const int seg_start, const int seg_end, const text_style color)
 				{
 					const int cs = std::max(seg_start, row_start);
 					const int ce = std::min(seg_end, row_end);
@@ -2029,7 +2029,7 @@ namespace pf::ui
 				// When wrapping, show line number only in the first visual row
 				if (_word_wrap && rect.height() > _font_extent.cy)
 					text_rect.bottom = text_rect.top + _font_extent.cy;
-				const auto num = to_str(lineIndex + 1);
+				const auto num = std::to_string(lineIndex + 1);
 				const auto sz = draw.measure_text(num, f);
 				const auto x = text_rect.right - sz.cx;
 				const auto y = text_rect.top + (text_rect.height() - sz.cy) / 2;
