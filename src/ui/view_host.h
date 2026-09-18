@@ -32,6 +32,13 @@ namespace pf::ui
 
 		// Layout, caret and scrollbar all need recomputing.
 		virtual void invalidate_view() = 0;
+
+		// The caret moved; nothing else changed. Kept separate from invalidate_view
+		// so moving the cursor does not force a relayout of the document.
+		virtual void invalidate_caret() = 0;
+
+		// The content extent changed, so the scrollbar needs recomputing.
+		virtual void invalidate_scrollbar() = 0;
 	};
 
 	// The view adds what it can do; the host decides how it appears and what sits
