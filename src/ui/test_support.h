@@ -189,6 +189,7 @@ namespace pf::ui::test
 		std::vector<std::pair<int, int>> count_changes;
 		std::vector<text_location> ensured;
 		int invalidate_view_count = 0;
+		int invalidate_layout_count = 0;
 		int invalidate_caret_count = 0;
 		int invalidate_scrollbar_count = 0;
 		int invalidate_status_count = 0;
@@ -200,6 +201,7 @@ namespace pf::ui::test
 			count_changes.clear();
 			ensured.clear();
 			invalidate_view_count = 0;
+			invalidate_layout_count = 0;
 			invalidate_caret_count = 0;
 			invalidate_scrollbar_count = 0;
 			invalidate_status_count = 0;
@@ -228,6 +230,11 @@ namespace pf::ui::test
 		void invalidate_view() override
 		{
 			++invalidate_view_count;
+		}
+
+		void invalidate_layout() override
+		{
+			++invalidate_layout_count;
 		}
 
 		void invalidate_caret() override
