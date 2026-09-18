@@ -191,6 +191,7 @@ namespace pf::ui::test
 		int invalidate_view_count = 0;
 		int invalidate_caret_count = 0;
 		int invalidate_scrollbar_count = 0;
+		int invalidate_status_count = 0;
 
 		void reset()
 		{
@@ -201,6 +202,7 @@ namespace pf::ui::test
 			invalidate_view_count = 0;
 			invalidate_caret_count = 0;
 			invalidate_scrollbar_count = 0;
+			invalidate_status_count = 0;
 		}
 
 		void invalidate_lines(const int start, const int end) override
@@ -236,6 +238,11 @@ namespace pf::ui::test
 		void invalidate_scrollbar() override
 		{
 			++invalidate_scrollbar_count;
+		}
+
+		void invalidate_status() override
+		{
+			++invalidate_status_count;
 		}
 	};
 }

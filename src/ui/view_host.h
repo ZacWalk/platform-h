@@ -39,6 +39,10 @@ namespace pf::ui
 
 		// The content extent changed, so the scrollbar needs recomputing.
 		virtual void invalidate_scrollbar() = 0;
+
+		// The status text or the focus band changed. Separate again because it
+		// repaints chrome around the text rather than the text itself.
+		virtual void invalidate_status() = 0;
 	};
 
 	// The view adds what it can do; the host decides how it appears and what sits
