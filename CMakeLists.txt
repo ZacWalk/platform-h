@@ -62,6 +62,7 @@ add_library(platform-ui STATIC
     src/ui/text_line.h
     src/ui/text_buffer.h
     src/ui/text_buffer.cpp
+    src/ui/markdown.h
     src/ui/view_base.h
     src/ui/view_text.h
     src/ui/view_doc.h

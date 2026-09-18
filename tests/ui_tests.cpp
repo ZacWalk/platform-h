@@ -944,6 +944,146 @@ namespace
 		CHECK(draw.drawn_text().find("visible text") != std::string::npos);
 		CHECK(!draw.fills.empty());
 	}
+
+	void test_markdown_parse()
+	{
+		namespace md = pf::ui::md;
+
+		const auto doc = md::parse("# Title\n\nSome *emphasis* and **strong**.\n\n- one\n- two\n\n> quoted\n");
+
+		CHECK(!doc.empty());
+
+		// Block kinds are recognised, not guessed from position.
+		auto kinds_seen = 0;
+		for (const auto& line : doc.lines)
+		{
+			if (line.kind == md::block::heading1) kinds_seen |= 1;
+			if (line.kind == md::block::bullet) kinds_seen |= 2;
+			if (line.kind == md::block::quote) kinds_seen |= 4;
+		}
+		CHECK_EQ(kinds_seen, 7);
+
+		// Emphasis survives as span state rather than as literal asterisks.
+		auto saw_italic = false;
+		auto saw_bold = false;
+		std::string all;
+		for (const auto& line : doc.lines)
+			for (const auto& span : line.spans)
+			{
+				all += span.text;
+				if (span.italic) saw_italic = true;
+				if (span.bold) saw_bold = true;
+			}
+		CHECK(saw_italic);
+		CHECK(saw_bold);
+		CHECK(all.find('*') == std::string::npos);
+
+		// Headings keep their text and drop their marker.
+		CHECK(all.find("Title") != std::string::npos);
+		CHECK(all.find("# ") == std::string::npos);
+	}
+
+	void test_markdown_links()
+	{
+		namespace md = pf::ui::md;
+
+		const auto doc = md::parse("see [the docs](https://example.invalid/x) here");
+
+		std::string link;
+		std::string link_text;
+		for (const auto& line : doc.lines)
+			for (const auto& span : line.spans)
+				if (!span.link.empty())
+				{
+					link = span.link;
+					link_text = span.text;
+				}
+
+		CHECK_STR(link, "https://example.invalid/x");
+		CHECK_STR(link_text, "the docs");
+
+		// A bare bracket is not a link.
+		const auto plain = md::parse("not [a link here");
+		for (const auto& line : plain.lines)
+			for (const auto& span : line.spans)
+				CHECK(span.link.empty());
+	}
+
+	void test_markdown_escape()
+	{
+		namespace md = pf::ui::md;
+
+		// Escaping is what stops untrusted text becoming markup.
+		const auto escaped = md::escape("**not bold** [not a link](x) `not code`");
+		const auto doc = md::parse(escaped);
+
+		for (const auto& line : doc.lines)
+			for (const auto& span : line.spans)
+			{
+				CHECK(!span.bold);
+				CHECK(!span.code);
+				CHECK(span.link.empty());
+			}
+
+		// Control characters become spaces rather than reaching the renderer.
+		const auto controls = md::escape(std::string("a\x01\x02" "b"));
+		CHECK(controls.find('\x01') == std::string::npos);
+		CHECK(controls.find('\x02') == std::string::npos);
+	}
+
+	void test_markdown_from_html()
+	{
+		namespace md = pf::ui::md;
+
+		// from_html reduces HTML to Markdown text; parsing it is a separate step.
+		const auto reduced = md::from_html("<h1>Heading</h1><p>Body with <b>bold</b> text.</p>");
+		const auto doc = md::parse(reduced);
+
+		std::string all;
+		auto saw_heading = false;
+		for (const auto& line : doc.lines)
+		{
+			if (line.kind == md::block::heading1) saw_heading = true;
+			for (const auto& span : line.spans) all += span.text;
+		}
+
+		CHECK(saw_heading);
+		CHECK(all.find("Heading") != std::string::npos);
+		CHECK(all.find("Body with") != std::string::npos);
+		// Tags are reduced away, never passed through.
+		CHECK(all.find('<') == std::string::npos);
+
+		// A script is not content.
+		const auto scripted = md::parse(md::from_html("<p>safe</p><script>alert(1)</script>"));
+		std::string text;
+		for (const auto& line : scripted.lines)
+			for (const auto& span : line.spans) text += span.text;
+		CHECK(text.find("alert") == std::string::npos);
+	}
+
+	void test_markdown_document_owns_its_text()
+	{
+		namespace md = pf::ui::md;
+
+		// Spans are views into the document's own buffer, so the document must keep
+		// that buffer alive. Parsing from a temporary and outliving it is the case
+		// that would dangle.
+		md::document doc;
+		{
+			std::string source = "# owned\n\ntext that must survive\n";
+			doc = md::parse(std::move(source));
+		}
+
+		std::string all;
+		for (const auto& line : doc.lines)
+			for (const auto& span : line.spans) all += span.text;
+
+		CHECK(all.find("owned") != std::string::npos);
+		CHECK(all.find("must survive") != std::string::npos);
+
+		// An empty document is legal and has no lines.
+		CHECK(md::parse("").empty());
+	}
 }
 
 // The backend's WinMain references these; a console test never calls them.
@@ -992,6 +1132,11 @@ int main()
 	test_view_word_wrap();
 	test_view_editing();
 	test_view_paints_its_text();
+	test_markdown_parse();
+	test_markdown_links();
+	test_markdown_escape();
+	test_markdown_from_html();
+	test_markdown_document_owns_its_text();
 
 	std::printf("platform-ui tests: %s (%d checks, %d failures)\n",
 	            g_failures == 0 ? "PASS" : "FAIL", g_checks, g_failures);
