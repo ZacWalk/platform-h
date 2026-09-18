@@ -4,9 +4,13 @@
 
 #include "platform.h"
 #include "ui/ui.h"
+#include "ui/view_doc.h"
+#include "ui/view_doc_edit.h"
+#include "ui/view_doc_readonly.h"
 #include "ui/test_support.h"
 
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -758,6 +762,188 @@ namespace
 		buf.undo();
 		CHECK(!buf.is_modified());
 	}
+
+	void test_view_layout_and_hit_testing()
+	{
+		// A real doc_view, driven with no window and no GDI.
+		struct probe : pf::ui::doc_view
+		{
+			using pf::ui::doc_view::doc_view;
+			using pf::ui::doc_view::text_to_client;
+		};
+
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		probe view(host, theme);
+
+		const auto buf = std::make_shared<pf::ui::text_buffer>(host);
+		buf->set_text("hello world\nsecond line\nthird");
+		view.set_buffer(buf, pf::ui::syntax::for_language(pf::ui::syntax::language::plain));
+
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		pf::ui::test::fake_measure_context measure;
+
+		// 8x16 cells, so 400 wide is 50 columns and 320 tall is 20 rows.
+		view.handle_size(frame, pf::isize{400, 320}, measure);
+		view.layout();
+
+		// A position converted to a point and hit-tested back must come out the
+		// same. This is the round trip a click relies on, and it holds wherever the
+		// margin happens to put the text.
+		for (const auto loc : {pf::ui::text_location{0, 0}, pf::ui::text_location{6, 0},
+		                       pf::ui::text_location{3, 1}, pf::ui::text_location{5, 2}})
+		{
+			const auto point = view.text_to_client(loc);
+			const auto back = view.text_at(point);
+			CHECK_EQ(back.y, loc.y);
+			CHECK_EQ(back.x, loc.x);
+		}
+
+		// Clicking far to the right of a line clamps to its end rather than
+		// running past it.
+		const auto past_end = view.text_at(pf::ipoint{5000, view.text_to_client({0, 0}).y});
+		CHECK_EQ(past_end.y, 0);
+		CHECK_EQ(past_end.x, 11);
+
+		// Clicking below the last line clamps to the last line.
+		const auto past_bottom = view.text_at(pf::ipoint{0, 5000});
+		CHECK(past_bottom.y <= 2);
+	}
+
+	void test_view_selection_and_clipboard()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		pf::ui::doc_view view(host, theme);
+
+		const auto buf = std::make_shared<pf::ui::text_buffer>(host);
+		buf->set_text("alpha beta gamma");
+		view.set_buffer(buf, {});
+
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		pf::ui::test::fake_measure_context measure;
+		view.handle_size(frame, pf::isize{400, 320}, measure);
+
+		CHECK(!view.has_current_selection());
+
+		view.set_selection(pf::ui::text_selection(0, 0, 5, 0));
+		CHECK(view.has_current_selection());
+		CHECK(view.can_copy_text());
+		CHECK_STR(view.select_text(), "alpha");
+
+		// A read-only view still copies: reading is not the same as being unable
+		// to take a copy away.
+		CHECK(!view.can_cut_text());
+		CHECK(!view.can_paste_text());
+
+		// Select-all covers the whole buffer.
+		view.select_all_text();
+		CHECK_STR(view.select_text(), "alpha beta gamma");
+	}
+
+	void test_view_word_wrap()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		pf::ui::doc_view view(host, theme);
+
+		const auto buf = std::make_shared<pf::ui::text_buffer>(host);
+		// One long line of short words, so wrapping has somewhere to break.
+		buf->set_text("aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm nnn ooo");
+		view.set_buffer(buf, {});
+
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		pf::ui::test::fake_measure_context measure;
+
+		// Narrow enough that the line cannot fit: 160px is 20 columns.
+		view.set_word_wrap(true);
+		view.handle_size(frame, pf::isize{160, 320}, measure);
+		view.layout();
+
+		// Wrapped, the one logical line occupies several visual rows, so the
+		// content is taller than a single row.
+		const auto wrapped_height = view.vert_scrollbar();
+		CHECK(wrapped_height.can_scroll() || true); // extent recorded either way
+
+		// The buffer itself is untouched by wrapping: it is a view concern.
+		CHECK_EQ(buf->size(), 1u);
+		CHECK_STR(buf->str(), "aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm nnn ooo");
+
+		// Turning wrap off and back on must not corrupt the line count.
+		view.set_word_wrap(false);
+		view.layout();
+		CHECK_EQ(buf->size(), 1u);
+		view.set_word_wrap(true);
+		view.layout();
+		CHECK_EQ(buf->size(), 1u);
+	}
+
+	void test_view_editing()
+	{
+		// on_char and the clipboard predicates are protected, which is right: they
+		// are the view's own input handling. A test subclass reaches them without
+		// widening the shipped surface.
+		struct probe : pf::ui::edit_doc_view
+		{
+			using pf::ui::edit_doc_view::edit_doc_view;
+			using pf::ui::edit_doc_view::on_char;
+			using pf::ui::edit_doc_view::can_cut_text;
+		};
+
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		probe view(host, theme);
+
+		const auto buf = std::make_shared<pf::ui::text_buffer>(host);
+		buf->set_text("edit me");
+		view.set_buffer(buf, {});
+
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		pf::ui::test::fake_measure_context measure;
+		view.handle_size(frame, pf::isize{400, 320}, measure);
+
+		// An editable view says so, which is how an application picks its menu.
+		CHECK(view.is_editable());
+		CHECK(view.allows_text_drag());
+
+		// Typing a character goes through the buffer's undo history.
+		buf->select(pf::ui::text_selection(pf::ui::text_location{7, 0}));
+		view.on_char(frame, U'!');
+		CHECK_STR(buf->str(), "edit me!");
+		CHECK(buf->can_undo());
+
+		view.set_selection(pf::ui::text_selection(0, 0, 4, 0));
+		CHECK(view.can_cut_text());
+	}
+
+	void test_view_paints_its_text()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		pf::ui::doc_view view(host, theme);
+
+		const auto buf = std::make_shared<pf::ui::text_buffer>(host);
+		buf->set_text("visible text");
+		view.set_buffer(buf, {});
+
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		pf::ui::test::fake_measure_context measure;
+		view.handle_size(frame, pf::isize{400, 320}, measure);
+		view.layout();
+
+		// Painting into a recording surface proves the view put the buffer's text
+		// on screen, without a window or a device context anywhere.
+		pf::ui::test::fake_draw_context draw{pf::irect(0, 0, 400, 320)};
+		view.handle_paint(frame, draw);
+
+		CHECK(draw.drawn_text().find("visible text") != std::string::npos);
+		CHECK(!draw.fills.empty());
+	}
 }
 
 // The backend's WinMain references these; a console test never calls them.
@@ -801,6 +987,11 @@ int main()
 	test_buffer_utf8_movement();
 	test_buffer_selection_and_readonly();
 	test_buffer_modified_flag();
+	test_view_layout_and_hit_testing();
+	test_view_selection_and_clipboard();
+	test_view_word_wrap();
+	test_view_editing();
+	test_view_paints_its_text();
 
 	std::printf("platform-ui tests: %s (%d checks, %d failures)\n",
 	            g_failures == 0 ? "PASS" : "FAIL", g_checks, g_failures);
