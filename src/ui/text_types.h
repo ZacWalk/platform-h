@@ -114,6 +114,7 @@ namespace pf::ui
 		md_heading3,
 		md_bold,
 		md_italic,
+		md_code,
 		md_link_text,
 		md_link_url,
 		md_marker,

@@ -67,6 +67,12 @@ namespace pf::ui
 		// rethinkify-app shipped; override to repalette without touching a
 		// highlighter.
 		[[nodiscard]] virtual pf::color_t style_color(text_style s) const;
+
+		// The font a markdown heading is drawn in, for levels 1 to 3; anything else
+		// is body text. Headings are the one place a text view stops being a fixed
+		// grid, so their sizes are metrics like the rest rather than constants
+		// buried in a view.
+		[[nodiscard]] virtual pf::font heading_font(int level) const;
 	};
 }
 

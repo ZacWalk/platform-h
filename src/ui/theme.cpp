@@ -53,6 +53,8 @@ namespace pf::ui
 			return pf::color_t(255, 255, 255);
 		case text_style::md_italic:
 			return pf::color_t(180, 220, 180);
+		case text_style::md_code:
+			return pf::color_t(215, 186, 125);
 		case text_style::md_link_text:
 			return pf::color_t(100, 180, 255);
 		case text_style::md_link_url:
@@ -64,5 +66,16 @@ namespace pf::ui
 		}
 
 		return pf::color_t(222, 222, 222);
+	}
+
+	pf::font theme::heading_font(const int level) const
+	{
+		switch (level)
+		{
+		case 1: return {text_font_height + 12, pf::font_name::consolas};
+		case 2: return {text_font_height + 8, pf::font_name::consolas};
+		case 3: return {text_font_height + 4, pf::font_name::consolas};
+		default: return text_font;
+		}
 	}
 }
