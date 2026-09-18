@@ -58,6 +58,9 @@ namespace pf::ui
 		pf::color_t tool_background = colors::tool_wnd_clr;
 		pf::color_t text = colors::text_color;
 		pf::color_t dim_text = colors::darker_text_color;
+		pf::color_t group_text = colors::folder_text_color;
+		pf::color_t line = colors::line_color;
+		pf::color_t match_highlight{220, 140, 0};
 		pf::color_t handle = colors::handle_color;
 		pf::color_t handle_hover = colors::handle_hover_color;
 		pf::color_t handle_tracking = colors::handle_tracking_color;

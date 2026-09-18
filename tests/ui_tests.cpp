@@ -10,6 +10,7 @@
 #include "ui/view_markdown.h"
 #include "ui/view_csv.h"
 #include "ui/view_hex.h"
+#include "ui/view_list.h"
 #include "ui/test_support.h"
 
 #include <cstdio>
@@ -1572,6 +1573,201 @@ namespace
 		CHECK(drawn.find("AB.") != std::string::npos);
 		CHECK(drawn.find('\x01') == std::string::npos);
 	}
+
+	// The list is driven through its public surface; only the row-building helper
+	// below reaches in, because what a row *is* belongs to the application.
+	struct list_probe : pf::ui::list_view
+	{
+		using pf::ui::list_view::list_view;
+		using pf::ui::list_view::_items;
+		using pf::ui::list_view::_header_height;
+		using pf::ui::list_view::draw_item;
+
+		void add(const std::string_view text, const bool group = false, const int depth = 0)
+		{
+			auto item = std::make_shared<pf::ui::list_item>();
+			item->text = text;
+			item->is_group = group;
+			item->depth = depth;
+			_items.push_back(item);
+		}
+	};
+
+	pf::ui::list_view* size_list(list_probe& view, pf::window_frame_ptr& frame, const pf::isize extent = {300, 200})
+	{
+		pf::ui::test::fake_measure_context measure;
+		view.handle_size(frame, extent, measure);
+		return &view;
+	}
+
+	void test_list_layout_and_hit_testing()
+	{
+		const pf::ui::theme theme;
+		list_probe view(theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		for (int i = 0; i < 40; i++) view.add(std::format("row {}", i));
+		size_list(view, frame);
+
+		// Rows are laid out top to bottom, each as tall as the list font plus its
+		// padding, and the content is taller than the view — so it can scroll.
+		const auto first = view._items.front()->bounds;
+		const auto second = view._items[1]->bounds;
+		CHECK_EQ(second.top, first.bottom);
+		CHECK(first.height() > 0);
+		CHECK(view.can_scroll());
+
+		// A point resolves to the row that contains it, by binary search rather
+		// than a scan — which is what makes a list of a hundred thousand files
+		// answer a click at all.
+		CHECK(view.selection_from_point({10, first.top + 1}) == view._items.front());
+		CHECK(view.selection_from_point({10, second.top + 1}) == view._items[1]);
+
+		// Above the first row and past the last there is nothing to hit.
+		CHECK(view.selection_from_point({10, -50}) == nullptr);
+		CHECK(view.selection_from_point({10, 100000}) == nullptr);
+
+		// An empty list hit-tests to nothing rather than reading past its rows.
+		list_probe empty(theme);
+		CHECK(empty.selection_from_point({0, 0}) == nullptr);
+	}
+
+	void test_list_selection_and_copy()
+	{
+		const pf::ui::theme theme;
+		list_probe view(theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		for (int i = 0; i < 6; i++) view.add(std::format("row {}", i));
+		size_list(view, frame);
+
+		view.set_selected(1);
+		CHECK_EQ(view.selected_index(), 1);
+		CHECK(view.is_selected(1));
+		CHECK(!view.is_selected(2));
+		CHECK_STR(view.selected_rows_text(), "row 1");
+
+		// Arrow keys move the selection and keep it a single row.
+		view.navigate_next(frame, true);
+		CHECK_EQ(view.selected_index(), 2);
+		CHECK_STR(view.selected_rows_text(), "row 2");
+
+		// Shift extends from where the selection started, so a run of rows can be
+		// copied — which no list in these applications could do before.
+		view.navigate_next(frame, true, false, true);
+		view.navigate_next(frame, true, false, true);
+		CHECK_EQ(view.selected_index(), 4);
+		CHECK(view.is_selected(2));
+		CHECK(view.is_selected(3));
+		CHECK(view.is_selected(4));
+		CHECK(!view.is_selected(1));
+		CHECK_STR(view.selected_rows_text(), "row 2\r\nrow 3\r\nrow 4");
+
+		// Moving without Shift collapses the run back to one row.
+		view.navigate_next(frame, false);
+		CHECK_STR(view.selected_rows_text(), "row 3");
+
+		// The selection survives being asked for after the list is rebuilt, because
+		// the index is only a hint.
+		const auto keep = view.selected_item();
+		view._items.insert(view._items.begin(), std::make_shared<pf::ui::list_item>());
+		CHECK_EQ(view.selected_index(), 4);
+		CHECK(view.selected_item() == keep);
+
+		// Navigation stops at the ends rather than wrapping.
+		view.set_selected(static_cast<int>(view._items.size()) - 1);
+		view.navigate_next(frame, true);
+		CHECK_EQ(view.selected_index(), static_cast<int>(view._items.size()) - 1);
+		view.set_selected(0);
+		view.navigate_next(frame, false);
+		CHECK_EQ(view.selected_index(), 0);
+	}
+
+	void test_list_paints_its_rows()
+	{
+		const pf::ui::theme theme;
+		list_probe view(theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		view.add("a folder", true);
+		view.add("a file", false, 1);
+		size_list(view, frame);
+		view.set_selected(1);
+
+		pf::ui::test::fake_draw_context draw{pf::irect(0, 0, 300, 200)};
+		view.handle_paint(frame, draw);
+
+		const auto drawn = draw.drawn_text();
+		CHECK(drawn.find("a folder") != std::string::npos);
+		CHECK(drawn.find("a file") != std::string::npos);
+
+		// A group is drawn in the group colour; the selected row is filled with the
+		// selection colour behind it.
+		auto saw_group_color = false;
+		for (const auto& t : draw.texts)
+			if (t.text == "a folder" && t.color == theme.group_text) saw_group_color = true;
+		CHECK(saw_group_color);
+
+		auto saw_selection_fill = false;
+		for (const auto& f : draw.fills)
+			if (f.color == theme.handle || f.color == theme.focus_handle) saw_selection_fill = true;
+		CHECK(saw_selection_fill);
+
+		// An indented row starts further right than the one above it.
+		int folder_x = 0;
+		int file_x = 0;
+		for (const auto& t : draw.texts)
+		{
+			if (t.text == "a folder") folder_x = t.x;
+			if (t.text == "a file") file_x = t.x;
+		}
+		CHECK(file_x > folder_x);
+	}
+
+	void test_list_row_text_fits_its_column()
+	{
+		const pf::ui::theme theme;
+		list_probe view(theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		// 8-pixel cells, so 200 pixels is 25 columns and this row cannot fit.
+		view.add("a name far longer than the column it has to live in");
+		size_list(view, frame, {200, 200});
+
+		pf::ui::test::fake_draw_context draw{pf::irect(0, 0, 200, 200)};
+		view.handle_paint(frame, draw);
+
+		const auto drawn = draw.drawn_text();
+		CHECK(drawn.find("...") != std::string::npos);
+		CHECK(drawn.find("live in") == std::string::npos);
+
+		// A row with a match is windowed around the match instead, because the match
+		// is the reason the row is on screen at all.
+		list_probe hits(theme);
+		hits.add("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa needle bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+		hits._items.front()->prefix = "42: ";
+		hits._items.front()->match_start = 31;
+		hits._items.front()->match_length = 6;
+		size_list(hits, frame, {200, 200});
+
+		draw.reset();
+		hits.handle_paint(frame, draw);
+
+		auto saw_highlight = false;
+		for (const auto& t : draw.texts)
+			if (t.text == "needle" && t.background == theme.match_highlight) saw_highlight = true;
+		CHECK(saw_highlight);
+
+		// The line number is drawn dimmer, and before the text.
+		auto saw_prefix = false;
+		for (const auto& t : draw.texts)
+			if (t.text == "42: " && t.color == theme.dim_text) saw_prefix = true;
+		CHECK(saw_prefix);
+	}
 }
 
 // The backend's WinMain references these; a console test never calls them.
@@ -1636,6 +1832,10 @@ int main()
 	test_csv_view();
 	test_csv_view_quotes_and_utf8();
 	test_hex_view();
+	test_list_layout_and_hit_testing();
+	test_list_selection_and_copy();
+	test_list_paints_its_rows();
+	test_list_row_text_fits_its_column();
 
 	std::printf("platform-ui tests: %s (%d checks, %d failures)\n",
 	            g_failures == 0 ? "PASS" : "FAIL", g_checks, g_failures);
