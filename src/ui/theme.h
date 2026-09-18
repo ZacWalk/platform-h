@@ -1,11 +1,14 @@
-// theme.h — the platform-ui colour table.
+// theme.h — the colours, fonts and spacing platform-ui draws with.
 //
-// Phase 2 replaces these constants with an injectable pf::ui::theme; until then they
-// carry the exact values rethinkify-app and equity-app both shipped.
+// `colors` is the raw palette. `theme` is what a view is handed: metrics as data,
+// because every consumer wants to set them, and the style-to-colour mapping as a
+// virtual, because an application may want its own syntax palette without
+// touching a highlighter.
 
 #pragma once
 
 #include "platform.h"
+#include "ui/text_types.h"
 
 namespace pf::ui::colors
 {
@@ -20,5 +23,50 @@ namespace pf::ui::colors
 	constexpr pf::color_t darker_text_color{0xCC, 0xCC, 0xCC};
 	constexpr pf::color_t line_color{0x22, 0x55, 0xAA};
 	constexpr pf::color_t window_background{33, 33, 33};
+}
+
+namespace pf::ui
+{
+	// What a view is handed to draw itself. Construct one, adjust the metrics,
+	// and pass it in; override style_color for a different syntax palette.
+	class theme
+	{
+	public:
+		virtual ~theme() = default;
+
+		double dpi_scale = 1.0;
+
+		pf::font list_font{20, pf::font_name::calibri};
+		pf::font edit_font{30, pf::font_name::calibri};
+		pf::font text_font{24, pf::font_name::consolas};
+
+		int list_font_height = 20;
+		int text_font_height = 24;
+
+		int padding_x = 5;
+		int padding_y = 5;
+		int indent = 16;
+
+		int edit_box_margin = 6;
+		int edit_box_inner_pad = 4;
+
+		int list_top_pad = 4;
+		int list_scroll_pad = 64;
+
+		// Chrome — the colours around the text rather than in it.
+		pf::color_t window_background = colors::window_background;
+		pf::color_t tool_background = colors::tool_wnd_clr;
+		pf::color_t text = colors::text_color;
+		pf::color_t dim_text = colors::darker_text_color;
+		pf::color_t handle = colors::handle_color;
+		pf::color_t handle_hover = colors::handle_hover_color;
+		pf::color_t handle_tracking = colors::handle_tracking_color;
+		pf::color_t focus_handle = colors::focus_handle_color;
+
+		// The colour of a run of styled text. The default is the dark palette
+		// rethinkify-app shipped; override to repalette without touching a
+		// highlighter.
+		[[nodiscard]] virtual pf::color_t style_color(text_style s) const;
+	};
 }
 
