@@ -16,10 +16,10 @@
         @{
             id = 'lib'
             kind = 'library'
-            'cmake-target' = 'platform'
+            'cmake-target' = 'platform-core'
             'test-label' = 'platform'
-            'debug-path' = 'build/debug/{libprefix}platform{lib}'
-            'release-path' = 'build/release/{libprefix}platform{lib}'
+            'debug-path' = 'build/debug/{libprefix}platform-core{lib}'
+            'release-path' = 'build/release/{libprefix}platform-core{lib}'
             platforms = @('x64-windows')
         }
     )

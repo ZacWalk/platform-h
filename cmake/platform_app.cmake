@@ -11,6 +11,9 @@
 #       DESCRIPTION "Potato browser"
 #       OUTPUT_NAME potato-64
 #       EMBED       src/res/master.css src/res/test.htm)
+#
+# Pass UI to also link platform::ui, the shared presentation layer. Apps that do
+# not ask for it link platform::core alone.
 
 # The function body runs in the caller's directory scope, so this has to be
 # reachable from anywhere, not just from platform-h's own scope.
@@ -18,7 +21,7 @@ set(PLATFORM_H_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}" CACHE INTERNAL "platform-h 
 
 function(platform_add_app target)
     cmake_parse_arguments(PA
-        "CONSOLE"
+        "CONSOLE;UI"
         "ICON;MANIFEST;DESCRIPTION;OUTPUT_NAME;VERSION;COMPANY"
         "SOURCES;EMBED"
         ${ARGN})
@@ -135,5 +138,11 @@ function(platform_add_app target)
     endif()
 
     target_link_libraries(${target} PRIVATE platform::platform)
+
+    # UI is opt-in: only an app that asks for the presentation layer links it.
+    if(PA_UI)
+        target_link_libraries(${target} PRIVATE platform::ui)
+    endif()
+
     set_target_properties(${target} PROPERTIES OUTPUT_NAME "${PA_OUTPUT_NAME}")
 endfunction()

@@ -2,18 +2,22 @@
 
 [![Build](https://github.com/ZacWalk/platform-h/actions/workflows/build.yml/badge.svg)](https://github.com/ZacWalk/platform-h/actions/workflows/build.yml)
 
-A small C++20 platform layer for desktop applications: one OS-free header,
-`platform.h`, and a backend that implements it. Everything the applications in
-this workspace need from an operating system — windows, drawing, fonts, menus,
-input, clipboard, files, HTTP, audio, timers, threading, child processes — is
-declared behind the `pf::` namespace, so the application code never sees a
-`HWND`.
+A small C++20 platform layer for desktop applications, in two static libraries:
+
+| Library | Alias | Contents |
+|---|---|---|
+| **platform-core** | `platform::core` (and `platform::platform`) | One OS-free header, `src/core/platform.h`, and a backend that implements it. Windows, drawing, fonts, menus, input, clipboard, files, HTTP, audio, timers, threading, child processes — all behind `pf::`, so application code never sees a `HWND`. |
+| **platform-ui** | `platform::ui` | The reusable presentation layer in `src/ui`: widgets, text views, markdown rendering and the agent chat panel, in `pf::ui`. Opt in with `platform_add_app(<target> UI ...)`. |
+
+platform-ui operates on a UTF-8 text buffer the application hands it. It never
+opens a file, never knows a path, and never names an application — loading and
+saving stay in the app.
 
 There is currently one backend, Win32/MSVC.
 
 ## Architecture
 
-### `platform.h` — the platform-independent API
+### `src/core/platform.h` — the platform-independent API
 
 Declarations only, with no OS headers. If a declaration cannot be implemented
 somewhere other than Windows, it does not belong here.
@@ -121,8 +125,9 @@ of objects its tasks reference.
 
 ## Consuming it from an app
 
-The library is a CMake package exporting `platform::platform`. Apps pull it in
-with `FetchContent` and declare themselves with `platform_add_app()`:
+Two CMake targets are exported: `platform::core` (aliased `platform::platform`
+for the apps that already link that name) and `platform::ui`. Apps pull the
+package in with `FetchContent` and declare themselves with `platform_add_app()`:
 
 ```cmake
 # Build against a sibling checkout when one exists; otherwise fetch the pin.
@@ -137,7 +142,8 @@ FetchContent_Declare(platform_h
     GIT_TAG main)
 FetchContent_MakeAvailable(platform_h)
 
-platform_add_app(myapp
+# UI is opt-in: drop it and the app links platform-core alone.
+platform_add_app(myapp UI
     SOURCES     src/main.cpp
     ICON        src/res/myapp.ico
     DESCRIPTION "My application"
