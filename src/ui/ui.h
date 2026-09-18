@@ -1,0 +1,17 @@
+// ui.h — the platform-ui umbrella header.
+//
+// platform-ui is the reusable presentation layer that sits on platform-core: widgets,
+// text views, markdown rendering and the agent chat panel. It operates on a UTF-8 text
+// buffer it is handed. It never opens a file, never knows a path, and never names an
+// application — loading and saving belong to the application.
+//
+// Everything here lives in pf::ui. Include the individual headers when you only need
+// part of it; include this one to get the lot.
+
+#pragma once
+
+#include "platform.h"
+
+#include "ui/theme.h"
+#include "ui/widgets.h"
+#include "ui/table_layout.h"
