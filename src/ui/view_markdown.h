@@ -883,7 +883,7 @@ namespace pf::ui
 		                    const int line_index, const table_layout::table_block& table) const
 		{
 			const auto font = body_font();
-			const auto selected = line_is_selected(line_index, static_cast<int>(_line_buf.size()));
+			const auto selected = line_fully_selected(line_index, static_cast<int>(_line_buf.size()));
 
 			// A table row is selected whole or not at all — its cells are drawn
 			// padded into their columns, so there is no honest half of one to shade.
@@ -909,17 +909,6 @@ namespace pf::ui
 			return table_layout::draw_table_row(draw, y, left_pad(), right, _cells, table, font,
 			                                    _font_extent.cx, _font_extent.cy, is_header,
 			                                    bg, marker, text_color, _cell_breaks, cell_breaks_fn);
-		}
-
-		// True when the selection covers a whole source line
-		[[nodiscard]] bool line_is_selected(const int line_index, const int length) const
-		{
-			if (!_doc || !_doc->has_selection()) return false;
-
-			const auto sel = _doc->selection().normalize();
-			const auto starts_before = sel._start.y < line_index || (sel._start.y == line_index && sel._start.x <= 0);
-			const auto ends_after = sel._end.y > line_index || (sel._end.y == line_index && sel._end.x >= length);
-			return starts_before && ends_after;
 		}
 
 		// --- Column arithmetic ---

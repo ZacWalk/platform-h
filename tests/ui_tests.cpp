@@ -8,6 +8,8 @@
 #include "ui/view_doc_edit.h"
 #include "ui/view_doc_readonly.h"
 #include "ui/view_markdown.h"
+#include "ui/view_csv.h"
+#include "ui/view_hex.h"
 #include "ui/test_support.h"
 
 #include <cstdio>
@@ -1445,6 +1447,131 @@ namespace
 		CHECK_EQ(after.x, view.text_to_client({0, 0}).x + 16);
 		CHECK_EQ(view.text_at(after).x, 3);
 	}
+
+	// Both table views are driven the same way: show text, size the view, lay out.
+	template <typename View>
+	pf::ui::text_buffer_ptr show_in(View& view, pf::ui::view_host& host, pf::window_frame_ptr& frame,
+	                                const std::string_view text, const pf::isize extent = {480, 320})
+	{
+		const auto buf = std::make_shared<pf::ui::text_buffer>(host);
+		buf->set_text(text);
+		view.set_buffer(buf, {});
+
+		pf::ui::test::fake_measure_context measure;
+		view.handle_size(frame, extent, measure);
+		view.layout();
+		return buf;
+	}
+
+	void test_csv_view()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		pf::ui::csv_view view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		const auto buf = show_in(view, host, frame,
+		                         "name,qty,note\nwidget,12,the long one\nbolt,3,short");
+
+		// A column is as wide as its widest cell, in code points.
+		const auto& table = view.table();
+		CHECK_EQ(table.col_widths.size(), 3u);
+		CHECK_EQ(table.col_widths[0], 6);  // "widget"
+		CHECK_EQ(table.col_widths[2], 12); // "the long one"
+
+		pf::ui::test::fake_draw_context draw{pf::irect(0, 0, 480, 320)};
+		view.handle_paint(frame, draw);
+
+		const auto drawn = draw.drawn_text();
+		CHECK(drawn.find("name") != std::string::npos);
+		CHECK(drawn.find("widget") != std::string::npos);
+		CHECK(drawn.find("the long one") != std::string::npos);
+
+		// The header is followed by a drawn separator that is in no record.
+		auto saw_separator = false;
+		for (const auto& t : draw.texts)
+			if (t.text.find("------") != std::string::npos) saw_separator = true;
+		CHECK(saw_separator);
+		CHECK_EQ(buf->size(), 3u);
+
+		// A point in a record resolves to the record: its cells are drawn padded
+		// into their columns, so there is no byte under the pointer to find.
+		const auto second_row_y = view.text_at({0, 0}).y;
+		CHECK(second_row_y >= 0);
+		CHECK_EQ(view.text_at({0, 100}).x, 0);
+		CHECK(view.text_at({470, 100}).x > 0);
+		CHECK(view.allows_drag_selection());
+
+		// What is copied is the record as it is in the file, not as it is drawn.
+		view.set_selection(pf::ui::text_selection(0, 1, 0, 2));
+		CHECK_STR(view.select_text(), "widget,12,the long one\r\n");
+
+		// And a selected record is drawn selected.
+		draw.reset();
+		view.handle_paint(frame, draw);
+
+		auto saw_selected = false;
+		for (const auto& t : draw.texts)
+			if (t.text.find("widget") != std::string::npos &&
+				t.background == theme.style_color(pf::ui::text_style::sel_bkgnd))
+				saw_selected = true;
+		CHECK(saw_selected);
+	}
+
+	void test_csv_view_quotes_and_utf8()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		pf::ui::csv_view view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		// A quoted field keeps its comma, and "café" is four columns in five bytes.
+		show_in(view, host, frame, "a,b\n\"x,y\",caf\xC3\xA9");
+
+		CHECK_EQ(view.table().col_widths.size(), 2u);
+		CHECK_EQ(view.table().col_widths[1], 4);
+
+		pf::ui::test::fake_draw_context draw{pf::irect(0, 0, 480, 320)};
+		view.handle_paint(frame, draw);
+
+		// Wrapping a cell must not split a character in half.
+		for (const auto& t : draw.texts)
+			CHECK(t.text.empty() || !pf::is_utf8_continuation(t.text.front()));
+
+		CHECK(draw.drawn_text().find("x,y") != std::string::npos);
+	}
+
+	void test_hex_view()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		pf::ui::hex_view view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		// One row of sixteen bytes, then a short one: "AB" plus a control byte.
+		show_in(view, host, frame, std::string("0123456789ABCDEF") + "\n" + std::string("AB\x01"));
+
+		pf::ui::test::fake_draw_context draw{pf::irect(0, 0, 640, 320)};
+		view.handle_paint(frame, draw);
+
+		const auto drawn = draw.drawn_text();
+
+		// Offsets count bytes, not lines: the second row starts at 0x10.
+		CHECK(drawn.find("00000000") != std::string::npos);
+		CHECK(drawn.find("00000010") != std::string::npos);
+
+		// '0' is 0x30 and 'A' is 0x41, and the ASCII column shows them as text.
+		CHECK(drawn.find("30 31 32 33") != std::string::npos);
+		CHECK(drawn.find("0123456789ABCDEF") != std::string::npos);
+
+		// An unprintable byte is a dot rather than whatever the font makes of it.
+		CHECK(drawn.find("41 42 01") != std::string::npos);
+		CHECK(drawn.find("AB.") != std::string::npos);
+		CHECK(drawn.find('\x01') == std::string::npos);
+	}
 }
 
 // The backend's WinMain references these; a console test never calls them.
@@ -1506,6 +1633,9 @@ int main()
 	test_markdown_view_tables();
 	test_markdown_view_wraps_without_touching_the_buffer();
 	test_markdown_view_utf8_positions();
+	test_csv_view();
+	test_csv_view_quotes_and_utf8();
+	test_hex_view();
 
 	std::printf("platform-ui tests: %s (%d checks, %d failures)\n",
 	            g_failures == 0 ? "PASS" : "FAIL", g_checks, g_failures);

@@ -57,7 +57,7 @@ opens a file, never knows a path, and never names an application.
 | `src/ui/text_line.h`, `text_buffer.h` / `.cpp` | The UTF-8 line and the editing model: lines, selection, undo |
 | `src/ui/markdown.h` | `pf::ui::md` — the Markdown model, its parser and the HTML reducer |
 | `src/ui/view_base.h` → `view_text.h` → `view_doc.h` | The view hierarchy: scrolling, selection and the clipboard, then the caret, wrap and hit testing |
-| `src/ui/view_doc_edit.h`, `view_doc_readonly.h`, `view_markdown.h` | The views an application shows: editable, read-only, and rendered Markdown |
+| `src/ui/view_doc_edit.h`, `view_doc_readonly.h`, `view_markdown.h`, `view_csv.h`, `view_hex.h` | The views an application shows: editable, read-only, rendered Markdown, CSV tables and bytes |
 | `src/ui/test_support.h` | Headless fakes — `measure_context`, `draw_context`, `view_host`, `window_frame` |
 | `cmake/platform_app.cmake` | `platform_add_app()` — the function apps use to declare themselves |
 | `cmake/embed_resources.cmake` | Turns data files into a generated C++ byte-array TU |
