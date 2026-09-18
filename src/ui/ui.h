@@ -19,5 +19,6 @@
 #include "ui/spell.h"
 #include "ui/text_line.h"
 #include "ui/text_buffer.h"
+#include "ui/markdown.h"
 #include "ui/widgets.h"
 #include "ui/table_layout.h"
