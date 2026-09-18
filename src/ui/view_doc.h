@@ -1755,6 +1755,19 @@ namespace pf::ui
 			return _font_extent.cy;
 		}
 
+		// True when the selection covers a whole line. A view that draws a line
+		// transformed — a table row padded into its columns — can shade it whole or
+		// not at all, because it has no honest half of one to shade.
+		[[nodiscard]] bool line_fully_selected(const int lineIndex, const int length) const
+		{
+			if (!_doc || !_doc->has_selection()) return false;
+
+			const auto sel = _doc->selection().normalize();
+			const auto starts_before = sel._start.y < lineIndex || (sel._start.y == lineIndex && sel._start.x <= 0);
+			const auto ends_after = sel._end.y > lineIndex || (sel._end.y == lineIndex && sel._end.x >= length);
+			return starts_before && ends_after;
+		}
+
 
 		int margin_width() const
 		{
