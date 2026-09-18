@@ -15,5 +15,6 @@
 #include "ui/theme.h"
 #include "ui/text_types.h"
 #include "ui/view_host.h"
+#include "ui/syntax.h"
 #include "ui/widgets.h"
 #include "ui/table_layout.h"

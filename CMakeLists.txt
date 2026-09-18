@@ -55,6 +55,8 @@ add_library(platform-ui STATIC
     src/ui/widgets.h
     src/ui/table_layout.h
     src/ui/table_layout.cpp
+    src/ui/syntax.h
+    src/ui/syntax.cpp
     src/ui/test_support.h
 )
 add_library(platform::ui ALIAS platform-ui)

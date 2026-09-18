@@ -129,6 +129,9 @@ namespace pf::ui
 
 	// Fills buf with the runs for one line and returns the cookie the next line
 	// starts from, so a multi-line construct such as a block comment can continue.
+	//
+	// The span is the bound: a highlighter never writes more runs than it is given
+	// room for, and an empty span asks for the cookie alone.
 	using highlight_fn = std::function<uint32_t(uint32_t cookie, std::string_view line_view,
-	                                            text_block* buf, int& count)>;
+	                                            std::span<text_block> buf, int& count)>;
 }
