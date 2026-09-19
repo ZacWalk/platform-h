@@ -19,6 +19,7 @@
 #include "platform.h"
 
 #include <algorithm>
+#include <set>
 #include <vector>
 
 namespace pf::ui::test
@@ -276,6 +277,9 @@ namespace pf::ui::test
 		// Timers that are running, so a test can fire them without a message loop
 		std::vector<uint32_t> timers;
 
+		// Modifier and mouse keys a test is holding down
+		std::set<unsigned int> held_keys;
+
 		~fake_window_frame() override
 		{
 			if (focused_window == this)
@@ -352,8 +356,17 @@ namespace pf::ui::test
 		{
 		}
 
-		[[nodiscard]] bool is_key_down(unsigned int) const override { return false; }
-		[[nodiscard]] bool is_key_down_async(unsigned int) const override { return false; }
+		// Keys a test is holding down, so a modifier-dependent path — Shift+Enter
+		// meaning "new line" rather than "send" — can be driven without a keyboard.
+		[[nodiscard]] bool is_key_down(const unsigned int vk) const override
+		{
+			return held_keys.contains(vk);
+		}
+
+		[[nodiscard]] bool is_key_down_async(const unsigned int vk) const override
+		{
+			return held_keys.contains(vk);
+		}
 
 		pf::window_frame_ptr create_child(std::string_view, uint32_t, pf::color_t) const & override
 		{
