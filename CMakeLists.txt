@@ -70,6 +70,7 @@ add_library(platform-ui STATIC
     src/ui/view_csv.h
     src/ui/view_hex.h
     src/ui/view_list.h
+    src/ui/pane_host.h
     src/ui/test_support.h
 )
 add_library(platform::ui ALIAS platform-ui)

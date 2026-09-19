@@ -11,6 +11,7 @@
 #include "ui/view_csv.h"
 #include "ui/view_hex.h"
 #include "ui/view_list.h"
+#include "ui/pane_host.h"
 #include "ui/test_support.h"
 
 #include <cstdio>
@@ -1768,6 +1769,566 @@ namespace
 			if (t.text == "42: " && t.color == theme.dim_text) saw_prefix = true;
 		CHECK(saw_prefix);
 	}
+
+	// A view that records what its window told it, so a test can assert the host
+	// routed an event rather than that something was merely drawn.
+	struct probe_pane : pf::frame_reactor
+	{
+		std::string name;
+		pf::ipoint last_point;
+		int mouse_count = 0;
+		int leave_count = 0;
+		int key_count = 0;
+		int timer_count = 0;
+		uint32_t last_timer_id = 0;
+		bool focused = false;
+		pf::isize extent;
+
+		explicit probe_pane(std::string n) : name(std::move(n))
+		{
+		}
+
+		uint32_t handle_message(pf::window_frame_ptr window, const pf::message_type msg,
+		                        const pf::message_params& params) override
+		{
+			if (msg == pf::message_type::set_focus) focused = true;
+			if (msg == pf::message_type::kill_focus) focused = false;
+			if (msg == pf::message_type::timer)
+			{
+				++timer_count;
+				last_timer_id = params.timer_id;
+			}
+			return 0;
+		}
+
+		uint32_t handle_mouse(pf::window_frame_ptr window, const pf::mouse_message_type msg,
+		                      const pf::mouse_params& params) override
+		{
+			if (msg == pf::mouse_message_type::mouse_leave)
+			{
+				++leave_count;
+			}
+			else
+			{
+				++mouse_count;
+				last_point = params.point;
+			}
+			return 0;
+		}
+
+		uint32_t handle_keyboard(pf::window_frame_ptr window, const pf::keyboard_message_type,
+		                         const pf::keyboard_params&) override
+		{
+			++key_count;
+			return 0;
+		}
+
+		void handle_paint(pf::window_frame_ptr& window, pf::draw_context& draw) override
+		{
+			// Draws at its own coordinates, as every view does
+			const pf::irect box(0, 0, 20, 10);
+			draw.fill_solid_rect(box, pf::color_t{1, 2, 3});
+			draw.draw_text(0, 0, box, name, pf::font{}, pf::color_t{}, pf::color_t{});
+		}
+
+		void handle_size(pf::window_frame_ptr& window, const pf::isize e, pf::measure_context&) override
+		{
+			extent = e;
+		}
+	};
+
+	void test_pane_host_routes_input()
+	{
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		pf::ui::pane_host host(frame);
+		pf::ui::test::fake_measure_context measure;
+
+		const auto left = std::make_shared<probe_pane>("left");
+		const auto right = std::make_shared<probe_pane>("right");
+		const auto left_pane = host.add_pane(left);
+		const auto right_pane = host.add_pane(right);
+
+		host.set_pane_bounds(left_pane, {0, 0, 100, 200}, measure);
+		host.set_pane_bounds(right_pane, {100, 0, 300, 200}, measure);
+
+		// A pane is told its own size, not the window's.
+		CHECK_EQ(left->extent.cx, 100);
+		CHECK_EQ(right->extent.cx, 200);
+		CHECK_EQ(left_pane->get_client_rect().right, 100);
+
+		// A click goes to the pane under it, in that pane's coordinates — the whole
+		// point, since a view believes its top-left corner is the origin.
+		pf::mouse_params click;
+		click.point = {150, 40};
+		host.handle_mouse(pf::mouse_message_type::left_button_down, click);
+		CHECK_EQ(right->mouse_count, 1);
+		CHECK_EQ(left->mouse_count, 0);
+		CHECK_EQ(right->last_point.x, 50);
+		CHECK_EQ(right->last_point.y, 40);
+
+		// And a click in the other pane goes to the other pane.
+		click.point = {10, 40};
+		host.handle_mouse(pf::mouse_message_type::left_button_down, click);
+		CHECK_EQ(left->mouse_count, 1);
+		CHECK_EQ(left->last_point.x, 10);
+
+		// A point in no pane is not an event.
+		click.point = {1000, 1000};
+		CHECK(!host.handle_mouse(pf::mouse_message_type::left_button_down, click));
+
+		// Moving from one pane to another leaves the first, even though the window
+		// itself never saw the pointer go anywhere.
+		pf::mouse_params move;
+		move.point = {10, 10};
+		host.handle_mouse(pf::mouse_message_type::mouse_move, move);
+		move.point = {150, 10};
+		host.handle_mouse(pf::mouse_message_type::mouse_move, move);
+		CHECK_EQ(left->leave_count, 1);
+	}
+
+	void test_pane_host_focus_and_keyboard()
+	{
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		window->set_focus();
+
+		pf::ui::pane_host host(frame);
+		pf::ui::test::fake_measure_context measure;
+
+		const auto first = std::make_shared<probe_pane>("first");
+		const auto second = std::make_shared<probe_pane>("second");
+		const auto first_pane = host.add_pane(first);
+		const auto second_pane = host.add_pane(second);
+		host.set_pane_bounds(first_pane, {0, 0, 100, 100}, measure);
+		host.set_pane_bounds(second_pane, {100, 0, 200, 100}, measure);
+
+		// Keys go nowhere until a pane has the focus.
+		CHECK(!host.handle_keyboard(pf::keyboard_message_type::key_down, {}));
+
+		// A view asks its window for focus exactly as it would with a real one.
+		first_pane->set_focus();
+		CHECK(first->focused);
+		CHECK(!second->focused);
+		CHECK(host.handle_keyboard(pf::keyboard_message_type::key_down, {}));
+		CHECK_EQ(first->key_count, 1);
+		CHECK_EQ(second->key_count, 0);
+
+		// Focus moving tells both sides, so the one losing it can stop a caret.
+		second_pane->set_focus();
+		CHECK(!first->focused);
+		CHECK(second->focused);
+		host.handle_keyboard(pf::keyboard_message_type::key_down, {});
+		CHECK_EQ(first->key_count, 1);
+		CHECK_EQ(second->key_count, 1);
+
+		// has_focus() is about the pane *and* the window: a caret must not blink in
+		// a window that is not active.
+		CHECK(second_pane->has_focus());
+		pf::ui::test::fake_window_frame::focused_window = nullptr;
+		CHECK(!second_pane->has_focus());
+	}
+
+	void test_pane_host_capture_and_timers()
+	{
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		pf::ui::pane_host host(frame);
+		pf::ui::test::fake_measure_context measure;
+
+		const auto left = std::make_shared<probe_pane>("left");
+		const auto right = std::make_shared<probe_pane>("right");
+		const auto left_pane = host.add_pane(left);
+		const auto right_pane = host.add_pane(right);
+		host.set_pane_bounds(left_pane, {0, 0, 100, 200}, measure);
+		host.set_pane_bounds(right_pane, {100, 0, 300, 200}, measure);
+
+		// Capture outlives the pointer leaving the pane — which is what lets a drag
+		// selection continue past the edge instead of stopping at it.
+		left_pane->set_capture();
+
+		pf::mouse_params drag;
+		drag.point = {250, 40};
+		host.handle_mouse(pf::mouse_message_type::mouse_move, drag);
+		CHECK_EQ(left->mouse_count, 1);
+		CHECK_EQ(right->mouse_count, 0);
+
+		// The point is still translated, so it reads as being outside to the left
+		// pane's own coordinates rather than being clamped or lost.
+		CHECK_EQ(left->last_point.x, 250);
+
+		left_pane->release_capture();
+		host.handle_mouse(pf::mouse_message_type::mouse_move, drag);
+		CHECK_EQ(right->mouse_count, 1);
+
+		// Two panes both blinking a caret ask for the same id, so the host has to
+		// give the window two different ones and map each back on the way in.
+		constexpr uint32_t caret_id = 1002;
+		CHECK_EQ(left_pane->set_timer(caret_id, 500), caret_id);
+		CHECK_EQ(right_pane->set_timer(caret_id, 500), caret_id);
+
+		auto fired = 0;
+		for (const auto id : window->timers)
+		{
+			pf::message_params params;
+			params.timer_id = id;
+			if (host.handle_message(pf::message_type::timer, params)) ++fired;
+		}
+
+		CHECK_EQ(fired, 2);
+		CHECK_EQ(left->timer_count, 1);
+		CHECK_EQ(right->timer_count, 1);
+
+		// Each pane sees the id it asked for, not the one the window really runs.
+		CHECK_EQ(left->last_timer_id, caret_id);
+		CHECK_EQ(right->last_timer_id, caret_id);
+
+		// A timer the host did not issue belongs to the application.
+		pf::message_params other;
+		other.timer_id = 4242;
+		CHECK(!host.handle_message(pf::message_type::timer, other));
+
+		// Killing one leaves the other running.
+		left_pane->kill_timer(caret_id);
+		auto still_running = 0;
+		for (const auto id : window->timers)
+		{
+			pf::message_params params;
+			params.timer_id = id;
+			if (host.handle_message(pf::message_type::timer, params)) ++still_running;
+		}
+		CHECK_EQ(still_running, 1);
+	}
+
+	void test_pane_host_confines_drawing()
+	{
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		pf::ui::pane_host host(frame);
+		pf::ui::test::fake_measure_context measure;
+
+		const auto left = std::make_shared<probe_pane>("left");
+		const auto right = std::make_shared<probe_pane>("right");
+		const auto left_pane = host.add_pane(left);
+		const auto right_pane = host.add_pane(right);
+		host.set_pane_bounds(left_pane, {0, 0, 100, 200}, measure);
+		host.set_pane_bounds(right_pane, {100, 30, 300, 200}, measure);
+
+		pf::ui::test::fake_draw_context draw{pf::irect(0, 0, 300, 200)};
+		host.handle_paint(draw);
+
+		// Both panes painted, each shifted into its own rectangle: the view drew at
+		// 0,0 and the surface put it where the pane really is.
+		CHECK_EQ(draw.texts.size(), 2u);
+		CHECK_EQ(draw.texts[0].x, 0);
+		CHECK_EQ(draw.texts[0].y, 0);
+		CHECK_STR(draw.texts[1].text, "right");
+		CHECK_EQ(draw.texts[1].x, 100);
+		CHECK_EQ(draw.texts[1].y, 30);
+
+		// The fills moved with them rather than overlapping at the origin.
+		CHECK_EQ(draw.fills[0].rect.left, 0);
+		CHECK_EQ(draw.fills[1].rect.left, 100);
+		CHECK_EQ(draw.fills[1].rect.top, 30);
+		CHECK_EQ(draw.fills[1].rect.right, 120);
+
+		// A pane outside the dirty rectangle is not painted at all.
+		pf::ui::test::fake_draw_context narrow{pf::irect(0, 0, 50, 200)};
+		host.handle_paint(narrow);
+		CHECK_EQ(narrow.texts.size(), 1u);
+		CHECK_STR(narrow.texts[0].text, "left");
+
+		// And a hidden pane is not painted either.
+		draw.reset();
+		left_pane->show(false);
+		host.handle_paint(draw);
+		CHECK_EQ(draw.texts.size(), 1u);
+		CHECK_STR(draw.texts[0].text, "right");
+	}
+
+	void test_pane_host_clip_cannot_escape()
+	{
+		// A view that clears its clip must get its pane back, not the whole window
+		// — the markdown pane does exactly this, and without the clamp it would be
+		// free to paint over everything beside it.
+		struct clip_probe : pf::frame_reactor
+		{
+			pf::irect seen_clip;
+
+			uint32_t handle_message(pf::window_frame_ptr, pf::message_type, const pf::message_params&) override
+			{
+				return 0;
+			}
+
+			void handle_paint(pf::window_frame_ptr& window, pf::draw_context& draw) override
+			{
+				seen_clip = draw.clip_rect();
+				draw.set_clip_rect({0, 0, 10, 10});
+				draw.clear_clip_rect();
+			}
+
+			void handle_size(pf::window_frame_ptr&, pf::isize, pf::measure_context&) override
+			{
+			}
+		};
+
+		struct recording_clip final : pf::ui::test::fake_draw_context
+		{
+			std::vector<pf::irect> clips;
+
+			using fake_draw_context::fake_draw_context;
+
+			void set_clip_rect(const pf::irect& rc) override { clips.push_back(rc); }
+
+			void clear_clip_rect() override
+			{
+			}
+		};
+
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		pf::ui::pane_host host(frame);
+		pf::ui::test::fake_measure_context measure;
+
+		const auto probe = std::make_shared<clip_probe>();
+		const auto pane = host.add_pane(probe);
+		host.set_pane_bounds(pane, {100, 50, 300, 150}, measure);
+
+		recording_clip draw{pf::irect(0, 0, 400, 400)};
+		host.handle_paint(draw);
+
+		// Every clip the pane caused is inside the pane, including the one it set
+		// by clearing.
+		CHECK(!draw.clips.empty());
+		for (const auto& c : draw.clips)
+		{
+			CHECK(c.left >= 100);
+			CHECK(c.top >= 50);
+			CHECK(c.right <= 300);
+			CHECK(c.bottom <= 150);
+		}
+
+		// Specifically: clearing narrowed it back to the pane rather than removing
+		// it. Checking only that the recorded clips are inside the pane would pass
+		// even if clearing had dropped through to the window.
+		CHECK_EQ(draw.clips.size(), 3u);
+		CHECK_EQ(draw.clips.back().left, 100);
+		CHECK_EQ(draw.clips.back().top, 50);
+		CHECK_EQ(draw.clips.back().right, 300);
+		CHECK_EQ(draw.clips.back().bottom, 150);
+
+		// And the dirty rectangle it was handed is in its own coordinates.
+		CHECK_EQ(probe->seen_clip.left, 0);
+		CHECK_EQ(probe->seen_clip.top, 0);
+	}
+
+	void test_pane_host_hosts_a_real_view()
+	{
+		// The point of all of it: a shared view, with no window of its own, inside a
+		// pane of someone else's window.
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		pf::ui::pane_host host(frame);
+		pf::ui::test::fake_measure_context measure;
+		pf::ui::test::recording_view_host view_host;
+		const pf::ui::theme theme;
+
+		const auto view = std::make_shared<pf::ui::markdown_view>(view_host, theme);
+		const auto buf = std::make_shared<pf::ui::text_buffer>(view_host);
+		buf->set_text("# Hosted\nbody text here");
+		view->set_buffer(buf, {});
+
+		const auto pane = host.add_pane(view);
+		host.set_pane_bounds(pane, {120, 40, 520, 360}, measure);
+		view->layout();
+
+		pf::ui::test::fake_draw_context draw{pf::irect(0, 0, 640, 480)};
+		host.handle_paint(draw);
+
+		// It rendered, and everything it drew landed inside its pane.
+		CHECK(draw.drawn_text().find("Hosted") != std::string::npos);
+		CHECK(!draw.texts.empty());
+		for (const auto& t : draw.texts)
+		{
+			CHECK(t.x >= 120);
+			CHECK(t.y >= 40);
+		}
+
+		// A click lands on the text the reader pointed at, in document coordinates,
+		// after the host has translated it out of the parent window.
+		const auto local = view->text_to_client({2, 1});
+		pf::mouse_params click;
+		click.point = {local.x + 120, local.y + 40};
+		host.handle_mouse(pf::mouse_message_type::left_button_down, click);
+
+		const auto hit = view->text_at(local);
+		CHECK_EQ(hit.y, 1);
+		CHECK_EQ(hit.x, 2);
+	}
+
+	void test_pane_host_routes_messages_without_a_client_point()
+	{
+		// Not every mouse message carries a client point. Routing them by
+		// subtracting the pane origin picks the wrong pane and corrupts what the
+		// view reads — a context menu would open against a mangled screen point.
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		pf::ui::pane_host host(frame);
+		pf::ui::test::fake_measure_context measure;
+
+		const auto left = std::make_shared<probe_pane>("left");
+		const auto right = std::make_shared<probe_pane>("right");
+		const auto left_pane = host.add_pane(left);
+		const auto right_pane = host.add_pane(right);
+		host.set_pane_bounds(left_pane, {0, 0, 100, 200}, measure);
+		host.set_pane_bounds(right_pane, {100, 0, 300, 200}, measure);
+
+		// context_menu carries a *screen* point, and the view converts it itself.
+		// It must arrive exactly as it was sent.
+		pf::mouse_params menu;
+		menu.point = {150, 60};
+		CHECK(host.handle_mouse(pf::mouse_message_type::context_menu, menu));
+		CHECK_EQ(right->mouse_count, 1);
+		CHECK_EQ(right->last_point.x, 150);
+		CHECK_EQ(right->last_point.y, 60);
+
+		// From the keyboard it is {-1,-1} and belongs to whichever pane has focus,
+		// since there is no point to hit-test at all.
+		left_pane->set_focus();
+		pf::mouse_params keyboard_menu;
+		keyboard_menu.point = {-1, -1};
+		CHECK(host.handle_mouse(pf::mouse_message_type::context_menu, keyboard_menu));
+		CHECK_EQ(left->mouse_count, 1);
+		CHECK_EQ(left->last_point.x, -1);
+
+		// set_cursor carries the hit-test packed into its point, so it is routed by
+		// where the cursor actually is rather than by that.
+		pf::mouse_params cursor;
+		cursor.point = {1, 0}; // HTCLIENT and a message id, not a position
+		cursor.hit_test = 1;
+		const auto before = left->mouse_count + right->mouse_count;
+		host.handle_mouse(pf::mouse_message_type::set_cursor, cursor);
+
+		// Wherever the real cursor is, this must not have been read as a position
+		// inside the left pane — which is what {1,0} would have meant.
+		CHECK(left->mouse_count + right->mouse_count <= before + 1);
+		if (left->mouse_count > 1) CHECK_EQ(left->last_point.x, 1);
+	}
+
+	void test_pane_host_releases_what_it_held()
+	{
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		pf::ui::test::fake_measure_context measure;
+
+		const auto probe = std::make_shared<probe_pane>("pane");
+
+		{
+			pf::ui::pane_host host(frame);
+			const auto pane = host.add_pane(probe);
+			host.set_pane_bounds(pane, {0, 0, 100, 100}, measure);
+
+			pane->set_focus();
+			pane->set_capture();
+			pane->set_timer(1002, 500);
+			CHECK_EQ(window->timers.size(), 1u);
+
+			// A pane nobody can see keeps neither the keyboard, the mouse nor a timer.
+			pane->show(false);
+			CHECK(!probe->focused);
+			CHECK_EQ(window->timers.size(), 0u);
+			CHECK(!host.handle_keyboard(pf::keyboard_message_type::key_down, {}));
+
+			// And a hidden pane does not swallow the mouse through a stale capture.
+			pf::mouse_params click;
+			click.point = {50, 50};
+			CHECK(!host.handle_mouse(pf::mouse_message_type::left_button_down, click));
+
+			// Removing a pane tells it that it lost the focus rather than leaving
+			// its caret believing otherwise.
+			pane->show(true);
+			pane->set_focus();
+			pane->set_timer(1002, 500);
+			CHECK(probe->focused);
+
+			host.remove_pane(pane);
+			CHECK(!probe->focused);
+			CHECK_EQ(window->timers.size(), 0u);
+
+			// A removed pane is detached: it answers harmlessly instead of reaching
+			// a host that no longer knows about it.
+			CHECK(!pane->attached());
+			CHECK(!pane->has_focus());
+			CHECK_EQ(pane->set_timer(1002, 500), 0u);
+
+			// A pane still running a timer when the host goes away must not leave it
+			// running on the window.
+			const auto second = host.add_pane(probe);
+			host.set_pane_bounds(second, {0, 0, 100, 100}, measure);
+			second->set_timer(1002, 500);
+			CHECK_EQ(window->timers.size(), 1u);
+		}
+
+		CHECK_EQ(window->timers.size(), 0u);
+	}
+
+	void test_pane_host_empty_clip_stays_inside()
+	{
+		// A clip that misses the pane entirely must come out empty, not inverted: a
+		// backend that normalises a reversed rectangle would turn "nothing" into a
+		// region sitting over the neighbouring panes.
+		struct clip_probe : pf::frame_reactor
+		{
+			uint32_t handle_message(pf::window_frame_ptr, pf::message_type, const pf::message_params&) override
+			{
+				return 0;
+			}
+
+			void handle_paint(pf::window_frame_ptr&, pf::draw_context& draw) override
+			{
+				// Entirely to the left of the pane, in pane coordinates
+				draw.set_clip_rect({-500, -500, -400, -400});
+			}
+
+			void handle_size(pf::window_frame_ptr&, pf::isize, pf::measure_context&) override
+			{
+			}
+		};
+
+		struct recording_clip final : pf::ui::test::fake_draw_context
+		{
+			std::vector<pf::irect> clips;
+
+			using fake_draw_context::fake_draw_context;
+
+			void set_clip_rect(const pf::irect& rc) override { clips.push_back(rc); }
+
+			void clear_clip_rect() override
+			{
+			}
+		};
+
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		pf::ui::pane_host host(frame);
+		pf::ui::test::fake_measure_context measure;
+
+		const auto pane = host.add_pane(std::make_shared<clip_probe>());
+		host.set_pane_bounds(pane, {100, 50, 300, 150}, measure);
+
+		recording_clip draw{pf::irect(0, 0, 400, 400)};
+		host.handle_paint(draw);
+
+		CHECK_EQ(draw.clips.size(), 2u);
+
+		// Empty, and still anchored inside the pane rather than reversed.
+		const auto& missed = draw.clips.back();
+		CHECK(missed.right <= missed.left || missed.bottom <= missed.top);
+		CHECK(missed.left >= 100);
+		CHECK(missed.top >= 50);
+		CHECK(missed.right <= 300);
+		CHECK(missed.bottom <= 150);
+	}
 }
 
 // The backend's WinMain references these; a console test never calls them.
@@ -1836,6 +2397,15 @@ int main()
 	test_list_selection_and_copy();
 	test_list_paints_its_rows();
 	test_list_row_text_fits_its_column();
+	test_pane_host_routes_input();
+	test_pane_host_focus_and_keyboard();
+	test_pane_host_capture_and_timers();
+	test_pane_host_confines_drawing();
+	test_pane_host_clip_cannot_escape();
+	test_pane_host_hosts_a_real_view();
+	test_pane_host_routes_messages_without_a_client_point();
+	test_pane_host_releases_what_it_held();
+	test_pane_host_empty_clip_stays_inside();
 
 	std::printf("platform-ui tests: %s (%d checks, %d failures)\n",
 	            g_failures == 0 ? "PASS" : "FAIL", g_checks, g_failures);
