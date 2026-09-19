@@ -2000,6 +2000,7 @@ namespace
 	{
 		std::string name;
 		pf::ipoint last_point;
+		pf::mouse_message_type last_mouse{};
 		int mouse_count = 0;
 		int leave_count = 0;
 		int key_count = 0;
@@ -2036,6 +2037,7 @@ namespace
 			{
 				++mouse_count;
 				last_point = params.point;
+				last_mouse = msg;
 			}
 			return 0;
 		}
@@ -2222,6 +2224,44 @@ namespace
 			if (host.handle_message(pf::message_type::timer, params)) ++still_running;
 		}
 		CHECK_EQ(still_running, 1);
+	}
+
+	// An application with drags of its own needs to see that a pane holds the
+	// mouse, and to be able to end that drag on its own terms.
+	void test_pane_host_arbitrates_capture()
+	{
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+		pf::ui::pane_host host(frame);
+		pf::ui::test::fake_measure_context measure;
+
+		const auto pane_view = std::make_shared<probe_pane>("pane");
+		const auto pane = host.add_pane(pane_view);
+		host.set_pane_bounds(pane, {40, 20, 200, 120}, measure);
+
+		CHECK(host.captured_pane() == nullptr);
+
+		pane->set_capture();
+		CHECK(host.captured_pane() == pane.get());
+
+		// Capture reaches the real window too, or the application would stop
+		// receiving the moves the pane is waiting for.
+		CHECK(window->captured);
+
+		const auto before = pane_view->mouse_count;
+		host.release_all_capture();
+
+		// The pane is told the button came up rather than being left tracking a
+		// drag nobody will ever end.
+		CHECK_EQ(pane_view->mouse_count, before + 1);
+		CHECK(pane_view->last_mouse == pf::mouse_message_type::left_button_up);
+		CHECK(host.captured_pane() == nullptr);
+		CHECK(!window->captured);
+
+		// Releasing when nothing is captured is not a synthesized click.
+		const auto quiet = pane_view->mouse_count;
+		host.release_all_capture();
+		CHECK_EQ(pane_view->mouse_count, quiet);
 	}
 
 	void test_pane_host_confines_drawing()
@@ -3028,6 +3068,7 @@ int main()
 	test_pane_host_routes_input();
 	test_pane_host_focus_and_keyboard();
 	test_pane_host_capture_and_timers();
+	test_pane_host_arbitrates_capture();
 	test_pane_host_confines_drawing();
 	test_pane_host_clip_cannot_escape();
 	test_pane_host_hosts_a_real_view();

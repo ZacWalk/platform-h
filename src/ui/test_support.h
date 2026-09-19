@@ -283,6 +283,10 @@ namespace pf::ui::test
 		// Whether the clipboard accepts text, so a refusal can be tested
 		bool clipboard_writable = true;
 
+		// Whether the mouse is captured, so a drag that must end can be proven to
+		// have ended rather than merely stopped being tracked.
+		bool captured = false;
+
 		~fake_window_frame() override
 		{
 			if (focused_window == this)
@@ -309,10 +313,12 @@ namespace pf::ui::test
 
 		void set_capture() override
 		{
+			captured = true;
 		}
 
 		void release_capture() override
 		{
+			captured = false;
 		}
 
 		// A real window answers with the timer's id, and a view reads a zero as

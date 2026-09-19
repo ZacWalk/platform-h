@@ -600,6 +600,30 @@ namespace pf::ui
 
 		[[nodiscard]] hosted_window* focused_pane() const { return _focused; }
 
+		// A host arbitrating a drag with its own needs to know whether a pane is
+		// mid-drag, and to be able to end that drag on its terms.
+		[[nodiscard]] hosted_window* captured_pane() const { return _captured; }
+
+		// Ends a pane drag the way a real window would: the pane is told the button
+		// came up where the mouse actually is, so it finalizes its selection and
+		// releases its own capture. A pane that does not release it loses it anyway,
+		// or the window would stay captured with nothing tracking the mouse.
+		void release_all_capture()
+		{
+			auto* const held = _captured;
+			if (!held) return;
+
+			pf::mouse_params params{};
+			params.point = cursor_in_parent();
+			send_mouse(held, pf::mouse_message_type::left_button_up, params);
+
+			if (_captured == held)
+			{
+				_captured = nullptr;
+				if (const auto parent = parent_frame()) parent->release_capture();
+			}
+		}
+
 		void focus_pane(const hosted_window_ptr& pane) { focus_pane(pane.get()); }
 
 		void focus_pane(hosted_window* pane)
