@@ -18,6 +18,7 @@
 
 #include "platform.h"
 
+#include <algorithm>
 #include <vector>
 
 namespace pf::ui::test
@@ -272,6 +273,9 @@ namespace pf::ui::test
 		std::string clipboard;
 		int invalidate_count = 0;
 
+		// Timers that are running, so a test can fire them without a message loop
+		std::vector<uint32_t> timers;
+
 		~fake_window_frame() override
 		{
 			if (focused_window == this)
@@ -307,10 +311,15 @@ namespace pf::ui::test
 		// A real window answers with the timer's id, and a view reads a zero as
 		// "no timer available" and abandons what it was starting — drag selection,
 		// for one. Answering honestly is what makes those paths testable.
-		uint32_t set_timer(const uint32_t id, uint32_t) override { return id; }
-
-		void kill_timer(uint32_t) override
+		uint32_t set_timer(const uint32_t id, uint32_t) override
 		{
+			if (std::ranges::find(timers, id) == timers.end()) timers.push_back(id);
+			return id;
+		}
+
+		void kill_timer(const uint32_t id) override
+		{
+			std::erase(timers, id);
 		}
 
 		[[nodiscard]] pf::ipoint screen_to_client(const pf::ipoint pt) const override { return pt; }

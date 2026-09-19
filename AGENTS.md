@@ -59,6 +59,7 @@ opens a file, never knows a path, and never names an application.
 | `src/ui/view_base.h` → `view_text.h` → `view_doc.h` | The view hierarchy: scrolling, selection and the clipboard, then the caret, wrap and hit testing |
 | `src/ui/view_doc_edit.h`, `view_doc_readonly.h`, `view_markdown.h`, `view_csv.h`, `view_hex.h` | The views an application shows: editable, read-only, rendered Markdown, CSV tables and bytes |
 | `src/ui/view_list.h` | `list_view` and `list_item` — the panel list: rows, selection, hover, keyboard and copy |
+| `src/ui/pane_host.h` | `pane_host` and `hosted_window` — running these views inside one window, for an application that draws its panes into rectangles rather than giving each a child window |
 | `src/ui/test_support.h` | Headless fakes — `measure_context`, `draw_context`, `view_host`, `window_frame` |
 | `cmake/platform_app.cmake` | `platform_add_app()` — the function apps use to declare themselves |
 | `cmake/embed_resources.cmake` | Turns data files into a generated C++ byte-array TU |
@@ -117,6 +118,21 @@ here is picked up by all of them with no publish step.
 3. Anything pure gets a case in `tests/ui_tests.cpp`. Layout and hit testing are
    testable without a window because `pf::measure_context` is an interface.
 4. An app opts in with `platform_add_app(<target> UI ...)`.
+
+## Two ways to host a view
+
+Every view here is a `pf::frame_reactor` and asks its `pf::window_frame` for focus,
+capture, timers and repaints. There are two ways to give it one:
+
+- **A child window each.** `window_frame::create_child`, then `set_reactor`.
+  rethinkify-app does this, and nothing more is needed.
+- **`pf::ui::pane_host`.** The application keeps its single window and one reactor,
+  adds a pane per view, and forwards paint, mouse, keyboard and messages to the
+  host, which routes them. list0 and equity-app are shaped this way — each draws
+  its panes into rectangles — and could not use any of these views without it.
+
+`window_frame` is an interface, not a window, which is what makes the second
+possible; `test_support.h` has implemented one without a window all along.
 
 ## Conventions
 
