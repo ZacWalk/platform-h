@@ -3001,6 +3001,54 @@ namespace
 		CHECK(view.desired_height() > 2 * 16);
 	}
 
+	// A one-line composer is shorter than a scrollbar. Drawing one inside it puts
+	// it on top of the only line there is, where it takes the click that should
+	// have put the caret in the text.
+	void test_composer_long_line_has_no_horizontal_scrollbar()
+	{
+		struct drag_probe : composer_probe
+		{
+			using composer_probe::composer_probe;
+			using pf::ui::composer::handle_mouse;
+			using pf::ui::composer::scroll_offset;
+		};
+
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		drag_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		const auto buf = show_composer(view, host, frame, {340, 24});
+		view.set_multiline(false);
+		view.set_max_rows(1);
+		view.set_word_wrap(false);
+		view.set_limit(pf::ui::input::max_editor_bytes);
+		view.set_text(std::string(500, 'x'));
+		view.layout();
+
+		// The line is far wider than the box, and the caret is at its end: this is
+		// exactly when a document view would raise a horizontal scrollbar.
+		view.ensure_visible(frame, pf::ui::text_location{500, 0});
+		const auto scrolled = view.scroll_offset().x;
+		CHECK(scrolled > 0);
+
+		pf::mouse_params down;
+		down.point = {8, 10};
+		down.left_button = true;
+		view.handle_mouse(frame, pf::mouse_message_type::left_button_down, down);
+
+		pf::mouse_params move;
+		move.point = {300, 10};
+		move.left_button = true;
+		view.handle_mouse(frame, pf::mouse_message_type::mouse_move, move);
+
+		// The press landed in text and the drag extended a selection, rather than
+		// catching a thumb and flinging the line sideways.
+		CHECK(buf->has_selection());
+		CHECK_EQ(view.scroll_offset().x, scrolled);
+	}
+
 	void test_composer_enter_and_shift_enter()
 	{
 		pf::ui::test::recording_view_host host;
@@ -3155,6 +3203,7 @@ int main()
 	test_composer_submits_and_recalls();
 	test_composer_keeps_a_refused_prompt();
 	test_composer_grows_then_scrolls();
+	test_composer_long_line_has_no_horizontal_scrollbar();
 	test_composer_enter_and_shift_enter();
 	test_composer_shows_its_placeholder();
 	test_edit_view_cut_keeps_text_when_the_clipboard_refuses();
