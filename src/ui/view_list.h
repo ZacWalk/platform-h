@@ -31,6 +31,11 @@ namespace pf::ui
 		std::string title;
 		int weight = 1;
 		bool right_align = false;
+
+		// Which way the first click sorts. A name reads best A to Z, but a price
+		// or a change reads best biggest-first, and having to click twice to get
+		// there is the sort of small wrongness nobody reports.
+		bool default_ascending = true;
 	};
 
 	// One cell of a row, when the list has columns. The colour is optional
@@ -546,7 +551,12 @@ namespace pf::ui
 				// reverses it — the usual bargain for a header.
 				if (const auto column = column_at(point); column >= 0)
 				{
-					const auto ascending = column == _sort_column ? !_sort_ascending : true;
+					// Clicking the sorted column reverses it; clicking a new one
+					// starts the way that column reads best.
+					const auto ascending = column == _sort_column
+						                       ? !_sort_ascending
+						                       : _columns[column].default_ascending;
+
 					set_sort(column, ascending);
 					on_sort_changed(column, ascending);
 					window->invalidate();

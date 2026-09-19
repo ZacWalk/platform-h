@@ -1820,6 +1820,27 @@ namespace
 
 		// A header click is not a row click: the selection is untouched.
 		CHECK(!view.selected_item());
+
+		// A column can say which way it reads best. A price wants biggest-first,
+		// and having to click twice to get there is the sort of small wrongness
+		// nobody reports.
+		sorting_probe numeric(theme);
+		numeric.set_columns({
+			{"Sym", 40, false, true},
+			{"Price", 30, true, false},
+		});
+		size_list(numeric, frame, {300, 200});
+
+		const auto numeric_rects = numeric.column_rects(300);
+		pf::mouse_params price_click;
+		price_click.point = {numeric_rects[1].left + 5, 2};
+		numeric.handle_mouse(frame, pf::mouse_message_type::left_button_down, price_click);
+		CHECK_EQ(numeric.sorted_column, 1);
+		CHECK(!numeric.sorted_ascending);
+
+		// Reversing still works from there.
+		numeric.handle_mouse(frame, pf::mouse_message_type::left_button_down, price_click);
+		CHECK(numeric.sorted_ascending);
 	}
 
 	void test_list_draws_its_cells()
