@@ -114,8 +114,6 @@ namespace pf::ui
 
 			// Remembered and cleared only on acceptance, so a refused prompt is
 			// neither lost from the box nor duplicated into the history.
-			// Remembered and cleared only on acceptance, so a refused prompt is
-			// neither lost from the box nor duplicated into the history.
 			if (!on_submit(content)) return;
 
 			remember(content);
