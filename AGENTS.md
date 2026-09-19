@@ -55,9 +55,11 @@ opens a file, never knows a path, and never names an application.
 | `src/ui/syntax.h` / `.cpp` | The syntax highlighters; language choice is the caller's |
 | `src/ui/spell.h` / `.cpp` | The process-wide spell checker and its cache |
 | `src/ui/text_line.h`, `text_buffer.h` / `.cpp` | The UTF-8 line and the editing model: lines, selection, undo |
+| `src/ui/text_input.h` | `pf::ui::input` — filtering and bounding untrusted text before it enters a prompt |
 | `src/ui/markdown.h` | `pf::ui::md` — the Markdown model, its parser and the HTML reducer |
 | `src/ui/view_base.h` → `view_text.h` → `view_doc.h` | The view hierarchy: scrolling, selection and the clipboard, then the caret, wrap and hit testing |
 | `src/ui/view_doc_edit.h`, `view_doc_readonly.h`, `view_markdown.h`, `view_csv.h`, `view_hex.h` | The views an application shows: editable, read-only, rendered Markdown, CSV tables and bytes |
+| `src/ui/view_composer.h` | `composer` — the prompt box: growing, history, and the input filter in front of it |
 | `src/ui/view_list.h` | `list_view` and `list_item` — the panel list: rows, selection, hover, keyboard and copy |
 | `src/ui/pane_host.h` | `pane_host` and `hosted_window` — running these views inside one window, for an application that draws its panes into rectangles rather than giving each a child window |
 | `src/ui/test_support.h` | Headless fakes — `measure_context`, `draw_context`, `view_host`, `window_frame` |
