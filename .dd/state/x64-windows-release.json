@@ -1,15 +1,15 @@
 {
+  "mapping": {
+    "test": "release",
+    "build": "release",
+    "configure": "release"
+  },
   "manifestHash": "932640E6DD79AF5BFF2735A0B4022A531690B8DE748E1D59D076F75A52374E6B",
+  "generator": "Ninja",
+  "root": "C:\\code\\apps\\platform-h",
   "files": {
     "C:\\code\\apps\\platform-h\\CMakePresets.json": "90B8A66331F70FDF7477B7D717BDAAF5770CD8E67E35FCB7428CE2907857702F"
   },
-  "directory": "C:\\code\\apps\\platform-h\\build\\release",
-  "generator": "Ninja",
   "multiConfig": false,
-  "mapping": {
-    "configure": "release",
-    "build": "release",
-    "test": "release"
-  },
-  "root": "C:\\code\\apps\\platform-h"
+  "directory": "C:\\code\\apps\\platform-h\\build\\release"
 }
