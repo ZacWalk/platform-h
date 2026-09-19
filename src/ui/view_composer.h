@@ -183,6 +183,18 @@ namespace pf::ui
 		[[nodiscard]] int top_content_padding() const override { return std::max(1, _font_extent.cy / 4); }
 		[[nodiscard]] int bottom_content_padding() const override { return std::max(1, _font_extent.cy / 4); }
 
+		// A composer is a few rows tall at most, so a horizontal scrollbar drawn
+		// inside it sits on top of the line it is meant to help read — and takes
+		// the click that should have put the caret there. Scrolling to follow the
+		// caret, which the view does anyway, is the whole of what is needed.
+		void recalc_horz_scrollbar() override
+		{
+			if (_word_wrap || !_doc || _screen_chars >= _doc->max_line_length())
+				_scroll_offset.x = 0;
+
+			_hscroll.update(0, 0, 0);
+		}
+
 		// Every typed character goes through the same filter a paste does, so a
 		// control character cannot be typed in either.
 		void on_char(pf::window_frame_ptr& window, const char32_t c) override
