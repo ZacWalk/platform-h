@@ -80,6 +80,11 @@ namespace pf::ui
 		// The font a view renders its text in; the agent pane sizes itself independently
 		[[nodiscard]] virtual pf::font body_font() const { return _theme.text_font; }
 
+		// Whether this view believes it holds the keyboard. A host arbitrating focus
+		// between several views reads it, and it is what makes "the caret stopped"
+		// observable without waiting for a blink.
+		[[nodiscard]] bool focused() const { return _focused; }
+
 		virtual void update_focus(pf::window_frame_ptr& window)
 		{
 			const bool focused = window->has_focus();
