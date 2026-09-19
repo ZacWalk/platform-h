@@ -2761,7 +2761,11 @@ namespace
 		show_composer(view, host, frame);
 
 		std::vector<std::string> sent;
-		view.on_submit = [&](std::string s) { sent.push_back(std::move(s)); };
+		view.on_submit = [&](std::string s)
+		{
+			sent.push_back(std::move(s));
+			return true;
+		};
 
 		view.set_text("first prompt");
 		view.on_key_down(frame, pf::platform_key::Return);
@@ -2799,6 +2803,59 @@ namespace
 		view.on_key_down(frame, pf::platform_key::Return);
 		CHECK_EQ(view.history().size(), 2u);
 		CHECK_STR(view.history().back(), "first prompt");
+	}
+
+	void test_composer_keeps_a_refused_prompt()
+	{
+		// An application can refuse what it is handed — list0 will not send a
+		// prompt until its cloud-use disclosure has been acknowledged. What the
+		// person wrote must survive that: losing it would punish them for a gate
+		// they have not been shown yet.
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		composer_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		show_composer(view, host, frame);
+
+		auto accept = false;
+		auto offered = 0;
+		view.on_submit = [&](std::string)
+		{
+			++offered;
+			return accept;
+		};
+
+		view.set_text("private question");
+		view.on_key_down(frame, pf::platform_key::Return);
+
+		// Offered and refused: the text stays, and nothing entered the history.
+		CHECK_EQ(offered, 1);
+		CHECK_STR(view.text(), "private question");
+		CHECK(view.history().empty());
+
+		// Still refused after a second try, and still not duplicated anywhere.
+		view.on_key_down(frame, pf::platform_key::Return);
+		CHECK_EQ(offered, 2);
+		CHECK_STR(view.text(), "private question");
+		CHECK(view.history().empty());
+
+		// Accepted: now it clears and is remembered, exactly once.
+		accept = true;
+		view.on_key_down(frame, pf::platform_key::Return);
+		CHECK_EQ(offered, 3);
+		CHECK_STR(view.text(), "");
+		CHECK_EQ(view.history().size(), 1u);
+		CHECK_STR(view.history().back(), "private question");
+
+		// With no handler at all there is nowhere for it to go, so it is kept
+		// rather than silently dropped.
+		composer_probe orphan(host, theme);
+		show_composer(orphan, host, frame);
+		orphan.set_text("nobody is listening");
+		orphan.on_key_down(frame, pf::platform_key::Return);
+		CHECK_STR(orphan.text(), "nobody is listening");
 	}
 
 	void test_composer_grows_then_scrolls()
@@ -2845,7 +2902,11 @@ namespace
 		show_composer(view, host, frame);
 
 		auto submitted = 0;
-		view.on_submit = [&](std::string) { ++submitted; };
+		view.on_submit = [&](std::string)
+		{
+			++submitted;
+			return true;
+		};
 
 		// Typing Enter as a character does nothing: it is handled as a key so that
 		// Shift can mean something different.
@@ -2980,6 +3041,7 @@ int main()
 	test_composer_edits_like_a_document();
 	test_composer_filters_what_is_typed_and_pasted();
 	test_composer_submits_and_recalls();
+	test_composer_keeps_a_refused_prompt();
 	test_composer_grows_then_scrolls();
 	test_composer_enter_and_shift_enter();
 	test_composer_shows_its_placeholder();

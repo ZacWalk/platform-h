@@ -28,9 +28,15 @@ namespace pf::ui
 	class composer : public edit_doc_view
 	{
 	public:
-		// What happens to a finished prompt. The composer does not know where it
-		// goes, and nothing here speaks a protocol.
-		using submit_fn = std::function<void(std::string)>;
+		// What happens to a finished prompt, and whether it was taken. A composer
+		// whose submission is refused **keeps its text**: the person still has what
+		// they wrote, and can act on whatever the refusal was about. An application
+		// that always accepts returns true and never notices.
+		//
+		// list0 is why this is not a void: it refuses a prompt until its cloud-use
+		// disclosure has been acknowledged, and has a test asserting the draft
+		// survives that refusal.
+		using submit_fn = std::function<bool(std::string)>;
 
 		composer(view_host& host, const theme& th, view_context* context = nullptr)
 			: edit_doc_view(host, th, context)
@@ -99,16 +105,21 @@ namespace pf::ui
 		// Lets the pane above hand over a keystroke that was typed at it
 		void type(pf::window_frame_ptr& window, const char32_t ch) { on_char(window, ch); }
 
-		// Sends what is there, if it is anything, and remembers it
+		// Offers what is there, if it is anything, and keeps it unless it was taken
 		void submit()
 		{
 			auto content = text();
 			if (content.find_first_not_of(" \t\r\n") == std::string::npos) return;
+			if (!on_submit) return;
+
+			// Remembered and cleared only on acceptance, so a refused prompt is
+			// neither lost from the box nor duplicated into the history.
+			// Remembered and cleared only on acceptance, so a refused prompt is
+			// neither lost from the box nor duplicated into the history.
+			if (!on_submit(content)) return;
 
 			remember(content);
 			set_text({});
-
-			if (on_submit) on_submit(std::move(content));
 		}
 
 		// --- History ---
