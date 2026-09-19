@@ -244,13 +244,17 @@ namespace pf::ui
 		}
 
 		// --- Clipboard ---
+		//
+		// The free functions rather than the window's, because a widget does not
+		// always hold a window_frame. Virtual so a test can refuse: what a view
+		// does when the clipboard says no is behaviour worth asserting.
 
-		std::string clipboard_text() const
+		[[nodiscard]] virtual std::string clipboard_text() const
 		{
 			return pf::platform_text_from_clipboard();
 		}
 
-		bool set_clipboard(const std::string_view text) const
+		virtual bool set_clipboard(const std::string_view text) const
 		{
 			return pf::platform_text_to_clipboard(text);
 		}
