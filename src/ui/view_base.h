@@ -38,5 +38,10 @@ namespace pf::ui
 	public:
 		// Exposed so a test can assert what the scrollbar was told without drawing.
 		[[nodiscard]] const custom_scrollbar& vert_scrollbar() const { return _vscroll; }
+
+		// Where the content currently sits under the viewport. A host syncing its
+		// own scrollbar reads this, and it is what makes "the caret scrolled into
+		// view" observable without drawing.
+		[[nodiscard]] pf::ipoint scroll_offset() const { return _scroll_offset; }
 	};
 }
