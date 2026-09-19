@@ -39,11 +39,20 @@ namespace pf::ui
 			return _doc->has_selection() || _doc->query_editable();
 		}
 
+		// Copy first, and only remove the text once the clipboard has taken it.
+		// edit_cut() deletes and *then* returns what it deleted, so handing its
+		// result to a clipboard that refuses it loses the text from both places —
+		// recoverable only by an undo the person has no reason to know they need.
 		bool cut_text_to_clipboard() override
 		{
-			if (!_doc->has_selection())
+			if (!_doc->has_selection() || !_doc->query_editable())
 				return false;
-			return set_clipboard(_doc->edit_cut());
+
+			if (!set_clipboard(_doc->copy()))
+				return false;
+
+			_doc->edit_delete();
+			return true;
 		}
 
 		bool paste_text_from_clipboard() override

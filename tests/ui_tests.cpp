@@ -1771,6 +1771,55 @@ namespace
 		CHECK(saw_prefix);
 	}
 
+	void test_edit_view_cut_keeps_text_when_the_clipboard_refuses()
+	{
+		// A clipboard can refuse — another process may hold it open. Cutting must
+		// then keep the text, because text that is neither on the clipboard nor in
+		// the document is gone, recoverable only by an undo the person has no
+		// reason to know they need.
+		struct probe : pf::ui::edit_doc_view
+		{
+			using pf::ui::edit_doc_view::edit_doc_view;
+			using pf::ui::edit_doc_view::cut_text_to_clipboard;
+
+			bool clipboard_accepts = true;
+			std::string written;
+
+			bool set_clipboard(const std::string_view text) const override
+			{
+				if (!clipboard_accepts) return false;
+				const_cast<probe*>(this)->written = text;
+				return true;
+			}
+		};
+
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		const auto buf = std::make_shared<pf::ui::text_buffer>(host);
+		buf->set_text("keep me");
+		view.set_buffer(buf, {});
+
+		pf::ui::test::fake_measure_context measure;
+		view.handle_size(frame, pf::isize{400, 200}, measure);
+		view.select_all_text();
+
+		// Refused: the text stays exactly where it was.
+		view.clipboard_accepts = false;
+		CHECK(!view.cut_text_to_clipboard());
+		CHECK_STR(buf->str(), "keep me");
+		CHECK(view.has_current_selection());
+
+		// Accepted: now it moves.
+		view.clipboard_accepts = true;
+		CHECK(view.cut_text_to_clipboard());
+		CHECK_STR(view.written, "keep me");
+		CHECK_STR(buf->str(), "");
+	}
+
 	// A view that records what its window told it, so a test can assert the host
 	// routed an event rather than that something was merely drawn.
 	struct probe_pane : pf::frame_reactor
@@ -2758,6 +2807,7 @@ int main()
 	test_composer_grows_then_scrolls();
 	test_composer_enter_and_shift_enter();
 	test_composer_shows_its_placeholder();
+	test_edit_view_cut_keeps_text_when_the_clipboard_refuses();
 
 	std::printf("platform-ui tests: %s (%d checks, %d failures)\n",
 	            g_failures == 0 ? "PASS" : "FAIL", g_checks, g_failures);

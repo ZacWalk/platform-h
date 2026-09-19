@@ -280,6 +280,9 @@ namespace pf::ui::test
 		// Modifier and mouse keys a test is holding down
 		std::set<unsigned int> held_keys;
 
+		// Whether the clipboard accepts text, so a refusal can be tested
+		bool clipboard_writable = true;
+
 		~fake_window_frame() override
 		{
 			if (focused_window == this)
@@ -382,6 +385,11 @@ namespace pf::ui::test
 
 		bool text_to_clipboard(const std::string_view text) override
 		{
+			// A real clipboard can refuse — another process may hold it open — and
+			// what a view does when it does is worth testing, because the honest
+			// answer is "keep the text".
+			if (!clipboard_writable) return false;
+
 			clipboard = text;
 			return true;
 		}
