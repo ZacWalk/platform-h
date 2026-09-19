@@ -11,6 +11,7 @@
 #include "ui/view_csv.h"
 #include "ui/view_hex.h"
 #include "ui/view_list.h"
+#include "ui/view_composer.h"
 #include "ui/pane_host.h"
 #include "ui/test_support.h"
 
@@ -2329,6 +2330,347 @@ namespace
 		CHECK(missed.right <= 300);
 		CHECK(missed.bottom <= 150);
 	}
+
+	// --- The input filter: what untrusted text has to survive ---
+	//
+	// These are list0's assertions, which are the reason its prompt editor could
+	// not simply be replaced by a text buffer. Each one names an attack or an
+	// accident that would otherwise reach the buffer.
+
+	void test_input_rejects_malformed_utf8()
+	{
+		namespace in = pf::ui::input;
+
+		// Overlong forms, encoded surrogates and out-of-range scalars are all ways
+		// of smuggling a character past a check that looks at the decoded value.
+		CHECK_STR(in::normalize("a\xC0\xAF\xED\xA0\x80\xF4\x90\x80\x80" "b"), "ab");
+
+		// A malformed sequence costs only its own lead byte: it must not swallow
+		// the valid text after it.
+		CHECK_STR(in::normalize("a\xE2Xb"), "aXb");
+
+		// A scalar cut off by the end of the input is dropped rather than completed
+		// with whatever follows in memory.
+		CHECK_STR(in::normalize("a\xF0\x9F"), "a");
+
+		// An embedded NUL is discarded rather than truncating the rest.
+		CHECK_STR(in::normalize(std::string("a\0b", 3)), "ab");
+
+		// Valid multi-byte text passes through untouched.
+		CHECK_STR(in::normalize("caf\xC3\xA9 \xF0\x9F\x98\x80"), "caf\xC3\xA9 \xF0\x9F\x98\x80");
+	}
+
+	void test_input_strips_controls_and_separators()
+	{
+		namespace in = pf::ui::input;
+
+		// Controls go; runs of separators collapse to one space.
+		CHECK_STR(in::normalize("a\r\n\tb\tc\n\nend\x01\x7F"), "a b c end");
+
+		// The Unicode newlines are newlines too, not printable characters.
+		CHECK_STR(in::normalize("a\xC2\x85" "b\xE2\x80\xA8" "c\xE2\x80\xA9" "d"), "a b c d");
+
+		// Ordinary spacing someone typed on purpose is left alone.
+		CHECK_STR(in::normalize("  keep  spaces  "), "  keep  spaces  ");
+
+		// Multiline keeps paragraphs, and CRLF is one break rather than two.
+		CHECK_STR(in::normalize("first\r\nsecond\n\nfourth", in::max_text_bytes, true),
+		          "first\nsecond\n\nfourth");
+
+		// Single-line mode cannot be given a second line.
+		CHECK(in::normalize("first\r\nsecond").find('\n') == std::string::npos);
+	}
+
+	void test_input_bounds_what_it_accepts()
+	{
+		namespace in = pf::ui::input;
+
+		// The output bound stops between characters, never inside one: five bytes
+		// of budget take "a" and the four-byte emoji, not three bytes of it.
+		const auto bounded = in::normalize("a\xF0\x9F\x98\x80z", 5);
+		CHECK_STR(bounded, "a\xF0\x9F\x98\x80");
+		CHECK_EQ(bounded.size(), 5u);
+
+		// A budget that cannot fit the next character stops rather than splitting it.
+		CHECK_STR(in::normalize("a\xF0\x9F\x98\x80z", 3), "a");
+
+		// Zero capacity accepts nothing at all.
+		CHECK(in::normalize("x", 0).empty());
+
+		// The default bounds both memory and the layout work that follows it.
+		CHECK_EQ(in::normalize(std::string(in::max_text_bytes + 1, 'a')).size(), in::max_text_bytes);
+
+		// And the *scan* is bounded as well as the output. Text that is rejected
+		// still costs time to reject, so a megabyte of control characters must not
+		// become a megabyte of work — this returns empty, having stopped looking.
+		CHECK(in::normalize(std::string(in::max_paste_bytes, '\1') + "tail").empty());
+	}
+
+	void test_input_assembles_surrogate_pairs()
+	{
+		pf::ui::input::char_assembler assembler;
+
+		// A lead waits rather than inserting half a character.
+		CHECK_EQ(assembler.accept(0xD83D), static_cast<char32_t>(0));
+		CHECK(assembler.waiting());
+
+		// Its trail completes it.
+		CHECK_EQ(assembler.accept(0xDE00), static_cast<char32_t>(0x1F600));
+		CHECK(!assembler.waiting());
+
+		// A trail with nothing before it is not a character.
+		CHECK_EQ(assembler.accept(0xDE00), static_cast<char32_t>(0));
+
+		// Ordinary text discards a stale lead rather than pairing with it.
+		assembler.accept(0xD83D);
+		CHECK_EQ(assembler.accept(U'a'), U'a');
+		CHECK_EQ(assembler.accept(0xDE00), static_cast<char32_t>(0));
+
+		// And anything that is not the other half cancels the wait.
+		assembler.accept(0xD83D);
+		assembler.cancel();
+		CHECK_EQ(assembler.accept(0xDE00), static_cast<char32_t>(0));
+
+		// A character the platform already combined passes straight through.
+		CHECK_EQ(assembler.accept(0x1F600), static_cast<char32_t>(0x1F600));
+	}
+
+	// --- The composer ---
+
+	struct composer_probe : pf::ui::composer
+	{
+		using pf::ui::composer::composer;
+		using pf::ui::composer::on_char;
+		using pf::ui::composer::on_key_down;
+		using pf::ui::composer::can_cut_text;
+		using pf::ui::composer::paste_text_from_clipboard;
+	};
+
+	pf::ui::text_buffer_ptr show_composer(composer_probe& view, pf::ui::view_host& host,
+	                                      pf::window_frame_ptr& frame, const pf::isize extent = {400, 64})
+	{
+		const auto buf = std::make_shared<pf::ui::text_buffer>(host);
+		view.set_buffer(buf, {});
+
+		pf::ui::test::fake_measure_context measure;
+		view.handle_size(frame, extent, measure);
+		view.layout();
+		return buf;
+	}
+
+	void test_composer_edits_like_a_document()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		composer_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		const auto buf = show_composer(view, host, frame);
+		view.set_text("hello world");
+		CHECK_STR(view.text(), "hello world");
+
+		// It is a document view, so selection and undo come for free — which is
+		// exactly what list0's prompt editor lacked.
+		view.select_all_text();
+		CHECK(view.can_copy_text());
+		CHECK(view.can_cut_text());
+		CHECK_STR(view.select_text(), "hello world");
+
+		{
+			pf::ui::undo_group ug(buf);
+			buf->insert_text(ug, pf::ui::text_location{0, 0}, "X");
+		}
+		CHECK_STR(view.text(), "Xhello world");
+		buf->undo();
+		CHECK_STR(view.text(), "hello world");
+	}
+
+	void test_composer_filters_what_is_typed_and_pasted()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		composer_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		show_composer(view, host, frame);
+
+		// Text set programmatically is filtered too: it may still have come from
+		// somewhere untrusted.
+		view.set_text("a\x01\x02" "b");
+		CHECK_STR(view.text(), "ab");
+
+		// A control character cannot be typed in either.
+		view.set_text({});
+		view.on_char(frame, U'a');
+		view.on_char(frame, 0x01);
+		view.on_char(frame, U'b');
+		CHECK_STR(view.text(), "ab");
+
+		// Half a character is never inserted on its own; the pair completes it.
+		view.set_text({});
+		view.on_char(frame, 0xD83D);
+		CHECK_STR(view.text(), "");
+		view.on_char(frame, 0xDE00);
+		CHECK_STR(view.text(), "\xF0\x9F\x98\x80");
+
+		// The limit is a limit: typing past it is refused rather than truncated
+		// mid-character.
+		view.set_limit(4);
+		view.set_text("abcd");
+		view.on_char(frame, U'e');
+		CHECK_STR(view.text(), "abcd");
+
+		// And set_text obeys the same bound.
+		view.set_text("123456789");
+		CHECK_STR(view.text(), "1234");
+	}
+
+	void test_composer_submits_and_recalls()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		composer_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		show_composer(view, host, frame);
+
+		std::vector<std::string> sent;
+		view.on_submit = [&](std::string s) { sent.push_back(std::move(s)); };
+
+		view.set_text("first prompt");
+		view.on_key_down(frame, pf::platform_key::Return);
+
+		CHECK_EQ(sent.size(), 1u);
+		CHECK_STR(sent[0], "first prompt");
+
+		// Sending clears the box, so the next prompt starts empty.
+		CHECK_STR(view.text(), "");
+
+		// Whitespace is not a prompt.
+		view.set_text("   ");
+		view.on_key_down(frame, pf::platform_key::Return);
+		CHECK_EQ(sent.size(), 1u);
+
+		view.set_text("second prompt");
+		view.on_key_down(frame, pf::platform_key::Return);
+		CHECK_EQ(sent.size(), 2u);
+
+		// Up walks back through what was sent, newest first.
+		view.on_key_down(frame, pf::platform_key::Up);
+		CHECK_STR(view.text(), "second prompt");
+		view.on_key_down(frame, pf::platform_key::Up);
+		CHECK_STR(view.text(), "first prompt");
+
+		// Walking forward off the end restores whatever was being typed, rather
+		// than losing it.
+		view.on_key_down(frame, pf::platform_key::Down);
+		CHECK_STR(view.text(), "second prompt");
+		view.on_key_down(frame, pf::platform_key::Down);
+		CHECK_STR(view.text(), "");
+
+		// Sending the same text twice does not keep two copies of it.
+		view.set_text("first prompt");
+		view.on_key_down(frame, pf::platform_key::Return);
+		CHECK_EQ(view.history().size(), 2u);
+		CHECK_STR(view.history().back(), "first prompt");
+	}
+
+	void test_composer_grows_then_scrolls()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		composer_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		show_composer(view, host, frame);
+
+		CHECK_EQ(view.rows(), 1);
+
+		view.set_text("one line");
+		view.layout();
+		CHECK_EQ(view.rows(), 1);
+
+		view.set_text("one\ntwo\nthree");
+		view.layout();
+		CHECK_EQ(view.rows(), 3);
+
+		// It stops growing and scrolls instead, so a long prompt cannot swallow
+		// whatever it shares a window with.
+		view.set_text("1\n2\n3\n4\n5\n6\n7\n8");
+		view.layout();
+		CHECK_EQ(view.rows(), pf::ui::composer::default_max_rows);
+
+		view.set_max_rows(2);
+		CHECK_EQ(view.rows(), 2);
+
+		// The height it asks for follows the rows, plus its padding.
+		CHECK(view.desired_height() > 2 * 16);
+	}
+
+	void test_composer_enter_and_shift_enter()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		composer_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		show_composer(view, host, frame);
+
+		auto submitted = 0;
+		view.on_submit = [&](std::string) { ++submitted; };
+
+		// Typing Enter as a character does nothing: it is handled as a key so that
+		// Shift can mean something different.
+		view.set_text("text");
+		view.on_char(frame, U'\n');
+		CHECK_STR(view.text(), "text");
+
+		// A single-line composer refuses a newline even with Shift held.
+		view.set_multiline(false);
+		window->held_keys.insert(pf::platform_key::Shift);
+		view.on_key_down(frame, pf::platform_key::Return);
+		CHECK_STR(view.text(), "text");
+		CHECK_EQ(submitted, 0);
+
+		// A multiline one accepts it, and still does not submit.
+		view.set_multiline(true);
+		view.on_key_down(frame, pf::platform_key::Return);
+		CHECK(view.text().find('\n') != std::string::npos);
+		CHECK_EQ(submitted, 0);
+
+		// Without Shift it sends.
+		window->held_keys.clear();
+		view.on_key_down(frame, pf::platform_key::Return);
+		CHECK_EQ(submitted, 1);
+	}
+
+	void test_composer_shows_its_placeholder()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		composer_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		show_composer(view, host, frame);
+		view.set_placeholder("Message the agent");
+
+		pf::ui::test::fake_draw_context draw{pf::irect(0, 0, 400, 64)};
+		view.handle_paint(frame, draw);
+		CHECK(draw.drawn_text().find("Message the agent") != std::string::npos);
+
+		// It is a hint, not content: once there is text it goes.
+		view.set_text("typed something");
+		draw.reset();
+		view.handle_paint(frame, draw);
+		CHECK(draw.drawn_text().find("Message the agent") == std::string::npos);
+		CHECK(draw.drawn_text().find("typed something") != std::string::npos);
+	}
 }
 
 // The backend's WinMain references these; a console test never calls them.
@@ -2406,6 +2748,16 @@ int main()
 	test_pane_host_routes_messages_without_a_client_point();
 	test_pane_host_releases_what_it_held();
 	test_pane_host_empty_clip_stays_inside();
+	test_input_rejects_malformed_utf8();
+	test_input_strips_controls_and_separators();
+	test_input_bounds_what_it_accepts();
+	test_input_assembles_surrogate_pairs();
+	test_composer_edits_like_a_document();
+	test_composer_filters_what_is_typed_and_pasted();
+	test_composer_submits_and_recalls();
+	test_composer_grows_then_scrolls();
+	test_composer_enter_and_shift_enter();
+	test_composer_shows_its_placeholder();
 
 	std::printf("platform-ui tests: %s (%d checks, %d failures)\n",
 	            g_failures == 0 ? "PASS" : "FAIL", g_checks, g_failures);
