@@ -205,9 +205,32 @@ namespace pf::ui
 		{
 			namespace pk = pf::platform_key;
 			const auto shift = window->is_key_down(pk::Shift);
+			const auto control = window->is_key_down(pk::Control);
 
 			// A key is not the other half of a character
 			if (vk != pk::Shift && vk != pk::Control) _assembler.cancel();
+
+			// A composer is an input box with no menu behind it, so the clipboard
+			// shortcuts every editor has are its own to handle. A view that lives
+			// under a menu gets these as commands instead.
+			if (control && !shift)
+				switch (vk)
+				{
+				case 'A':
+					select_all_text();
+					return true;
+				case 'C':
+					copy_text_to_clipboard();
+					return true;
+				case 'X':
+					cut_text_to_clipboard();
+					return true;
+				case 'V':
+					paste_text_from_clipboard();
+					return true;
+				default:
+					break;
+				}
 
 			// Escape only moves focus, so it is safe to press while a turn is running
 			if (vk == pk::Escape)

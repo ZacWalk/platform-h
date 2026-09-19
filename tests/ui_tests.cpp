@@ -2790,6 +2790,76 @@ namespace
 		CHECK_STR(view.text(), "1234");
 	}
 
+	// A composer is an input box with no menu behind it, so it owns the clipboard
+	// shortcuts rather than waiting for a command that is never sent.
+	void test_composer_handles_the_clipboard_shortcuts()
+	{
+		struct clip_probe : composer_probe
+		{
+			using composer_probe::composer_probe;
+
+			mutable std::string board;
+			bool accepts = true;
+
+			[[nodiscard]] std::string clipboard_text() const override { return board; }
+
+			bool set_clipboard(const std::string_view text) const override
+			{
+				if (!accepts) return false;
+				board = text;
+				return true;
+			}
+		};
+
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		clip_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		show_composer(view, host, frame);
+		window->held_keys.insert(pf::platform_key::Control);
+
+		view.set_text("hello");
+		view.on_key_down(frame, 'A');
+		view.on_key_down(frame, 'C');
+		CHECK_STR(view.board, "hello");
+		CHECK_STR(view.text(), "hello");
+
+		// A refused cut keeps the text: neither on the clipboard nor in the box is
+		// a loss recoverable only by an undo nobody knows they need.
+		view.accepts = false;
+		view.on_key_down(frame, 'X');
+		CHECK_STR(view.text(), "hello");
+
+		view.accepts = true;
+		view.on_key_down(frame, 'X');
+		CHECK_STR(view.text(), "");
+		CHECK_STR(view.board, "hello");
+
+		// Paste goes through the composer's filter, so a multi-line clipboard
+		// arrives on the one line a single-line composer has.
+		view.set_multiline(false);
+		view.board = "one\r\ntwo";
+		view.on_key_down(frame, 'V');
+		CHECK_STR(view.text(), "one two");
+
+		// Ctrl+Shift+C is not a copy; it must reach the view as an ordinary key.
+		window->held_keys.insert(pf::platform_key::Shift);
+		view.board.clear();
+		view.select_all_text();
+		view.on_key_down(frame, 'C');
+		CHECK_STR(view.board, "");
+		window->held_keys.erase(pf::platform_key::Shift);
+
+		// And without Control these are just letters, not commands.
+		window->held_keys.erase(pf::platform_key::Control);
+		view.set_text("kept");
+		view.select_all_text();
+		view.on_key_down(frame, 'X');
+		CHECK_STR(view.text(), "kept");
+	}
+
 	void test_composer_submits_and_recalls()
 	{
 		pf::ui::test::recording_view_host host;
@@ -3081,6 +3151,7 @@ int main()
 	test_input_assembles_surrogate_pairs();
 	test_composer_edits_like_a_document();
 	test_composer_filters_what_is_typed_and_pasted();
+	test_composer_handles_the_clipboard_shortcuts();
 	test_composer_submits_and_recalls();
 	test_composer_keeps_a_refused_prompt();
 	test_composer_grows_then_scrolls();
