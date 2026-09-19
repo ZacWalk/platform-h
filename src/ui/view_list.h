@@ -24,12 +24,44 @@
 
 namespace pf::ui
 {
+	// One column of a list that has them. Widths are shares rather than pixels,
+	// because a panel is resized and a column has no opinion about DPI.
+	struct list_column
+	{
+		std::string title;
+		int weight = 1;
+		bool right_align = false;
+	};
+
+	// One cell of a row, when the list has columns. The colour is optional
+	// because most cells want the row's: a gain is green and a loss is red, but
+	// a symbol is just text.
+	struct list_cell
+	{
+		std::string text;
+		pf::color_t color;
+		bool has_color = false;
+
+		list_cell() = default;
+
+		list_cell(std::string t) : text(std::move(t))
+		{
+		}
+
+		list_cell(std::string t, const pf::color_t c) : text(std::move(t)), color(c), has_color(true)
+		{
+		}
+	};
+
 	struct list_item
 	{
 		pf::irect bounds; // where the last layout put it
 
 		std::string text;
 		std::string prefix; // drawn dimmer before the text — a line number, say
+
+		// Filled instead of `text` when the list has columns.
+		std::vector<list_cell> cells;
 
 		int depth = 0;
 		bool is_group = false;
@@ -71,6 +103,10 @@ namespace pf::ui
 		pf::isize _font_extent = {10, 10};
 		int _header_height = 0;
 
+		std::vector<list_column> _columns;
+		int _sort_column = -1;
+		bool _sort_ascending = true;
+
 	public:
 		list_view(const theme& th, view_context* context = nullptr) : _theme(th), _context(context)
 		{
@@ -79,6 +115,72 @@ namespace pf::ui
 		~list_view() override = default;
 
 		[[nodiscard]] list_item_ptr selected_item() const { return _selected_item; }
+
+		// --- Columns ---
+		//
+		// A list with columns draws a header, and clicking one asks to sort by it.
+		// The *ordering* is not done here: a column of live prices sorts by the
+		// number behind the text, with its own rule for rows that have no number
+		// yet, and only the application knows that. The list reports which column
+		// and which direction; the application reorders its own rows.
+
+		void set_columns(std::vector<list_column> columns)
+		{
+			_columns = std::move(columns);
+			if (_sort_column >= static_cast<int>(_columns.size())) _sort_column = -1;
+		}
+
+		[[nodiscard]] const std::vector<list_column>& columns() const { return _columns; }
+		[[nodiscard]] int sort_column() const { return _sort_column; }
+		[[nodiscard]] bool sort_ascending() const { return _sort_ascending; }
+
+		void set_sort(const int column, const bool ascending)
+		{
+			_sort_column = column >= 0 && column < static_cast<int>(_columns.size()) ? column : -1;
+			_sort_ascending = ascending;
+		}
+
+		// Which column a point in the header is over, or -1.
+		[[nodiscard]] int column_at(const pf::ipoint& point) const
+		{
+			if (_columns.empty() || point.y < 0 || point.y >= _header_height) return -1;
+
+			const auto rects = column_rects(_view_extent.cx);
+
+			for (size_t i = 0; i < rects.size(); i++)
+				if (point.x >= rects[i].left && point.x < rects[i].right) return static_cast<int>(i);
+
+			return -1;
+		}
+
+
+		// Where each column sits, given the width available to rows. Public so an
+		// application can line something else up with them.
+		[[nodiscard]] std::vector<pf::irect> column_rects(const int width) const
+		{
+			std::vector<pf::irect> rects;
+			if (_columns.empty()) return rects;
+
+			auto total = 0;
+			for (const auto& c : _columns) total += std::max(1, c.weight);
+
+			const auto available = std::max(0, width - scrollbar_reserve());
+			auto x = 0;
+
+			for (size_t i = 0; i < _columns.size(); i++)
+			{
+				// The last column takes the rounding, so the columns always add up
+				// to the width rather than leaving a sliver.
+				const auto w = i + 1 == _columns.size()
+					               ? available - x
+					               : available * std::max(1, _columns[i].weight) / total;
+
+				rects.push_back({x, 0, x + w, 0});
+				x += w;
+			}
+
+			return rects;
+		}
 
 		// O(1) while the hint holds, falling back to a scan after the list is rebuilt
 		[[nodiscard]] int selected_index() const
@@ -132,6 +234,21 @@ namespace pf::ui
 		// rows stand for something longer — a path, say — overrides it.
 		[[nodiscard]] virtual std::string row_text(const list_item& item) const
 		{
+			// A row with columns copies as its cells, tab-separated, so a run of
+			// rows pastes into a spreadsheet as the table it looks like.
+			if (!item.cells.empty())
+			{
+				std::string out;
+
+				for (const auto& cell : item.cells)
+				{
+					if (!out.empty()) out += '\t';
+					out += cell.text;
+				}
+
+				return out;
+			}
+
 			return item.prefix.empty() ? item.text : item.prefix + item.text;
 		}
 
@@ -314,6 +431,11 @@ namespace pf::ui
 		void layout_list(const pf::measure_context& measure)
 		{
 			_font_extent = measure.measure_char(_theme.list_font);
+
+			// A header only exists when there are columns to title, and it is as
+			// tall as the text it holds plus the padding either side.
+			if (!_columns.empty()) _header_height = _font_extent.cy + _theme.padding_y * 2;
+
 			layout_list();
 		}
 
@@ -417,7 +539,22 @@ namespace pf::ui
 			window->set_focus();
 
 			const auto hh = _header_height;
-			if (point.y < hh) return 0;
+
+			if (point.y < hh)
+			{
+				// Clicking a column sorts by it, and clicking the sorted one
+				// reverses it — the usual bargain for a header.
+				if (const auto column = column_at(point); column >= 0)
+				{
+					const auto ascending = column == _sort_column ? !_sort_ascending : true;
+					set_sort(column, ascending);
+					on_sort_changed(column, ascending);
+					window->invalidate();
+					return 1;
+				}
+
+				return 0;
+			}
 
 			const auto rc = pf::irect(0, hh, _view_extent.cx, _view_extent.cy);
 
@@ -504,7 +641,48 @@ namespace pf::ui
 	protected:
 		// --- What the application decides ---
 
+		// The default draws column headers when the list has columns, and nothing
+		// when it has none. A panel that wants something else there — a search box,
+		// say — overrides this and gets the whole strip.
 		virtual void draw_header(pf::window_frame_ptr& window, pf::draw_context& dc, const pf::irect& header_rect)
+		{
+			if (_columns.empty()) return;
+
+			dc.fill_solid_rect(header_rect, _theme.header_background);
+
+			const auto rects = column_rects(header_rect.width());
+			const auto font = _theme.list_font;
+			const auto y = header_rect.top + _theme.padding_y;
+
+			for (size_t i = 0; i < _columns.size() && i < rects.size(); i++)
+			{
+				const auto& column = _columns[i];
+				const auto sorted = static_cast<int>(i) == _sort_column;
+
+				// The indicator is part of the title's width, so a sorted column's
+				// text does not jump when the arrow appears.
+				auto title = column.title;
+				if (sorted) title += _sort_ascending ? " \xE2\x96\xB2" : " \xE2\x96\xBC";
+
+				const auto size = dc.measure_text(title, font);
+				const auto left = header_rect.left + rects[i].left;
+				const auto right = header_rect.left + rects[i].right;
+
+				const auto x = column.right_align
+					               ? std::max(left, right - _theme.padding_x - size.cx)
+					               : left + _theme.padding_x;
+
+				const pf::irect clip{x, y, std::min(x + size.cx, right), y + size.cy};
+				if (clip.width() <= 0) continue;
+
+				dc.draw_text(x, y, clip, title, font,
+				             sorted ? _theme.text : _theme.dim_text, _theme.header_background);
+			}
+		}
+
+		// Clicking a column sorts by it; clicking the one already sorted reverses
+		// it. The application does the reordering — see set_columns.
+		virtual void on_sort_changed(int column, bool ascending)
 		{
 		}
 
@@ -610,6 +788,12 @@ namespace pf::ui
 				                ? (_focused ? _theme.focus_handle : _theme.handle)
 				                : (hovered ? _theme.handle_hover : _theme.tool_background);
 
+			if (!_columns.empty())
+			{
+				draw_cells(dc, *item, bounds, font_spec, bg);
+				return;
+			}
+
 			if (item->is_group)
 			{
 				draw_expand_icon(dc, bounds.left + indent + 4, (bounds.top + bounds.bottom) / 2, item->expanded);
@@ -645,6 +829,54 @@ namespace pf::ui
 		}
 
 	private:
+		// Room a visible scrollbar needs, so a right-aligned column is not drawn
+		// underneath it.
+		[[nodiscard]] int scrollbar_reserve() const
+		{
+			return _content_extent.cy > _view_extent.cy - _header_height
+				       ? _vscroll.thumb_thickness() + _vscroll.edge_margin() + 4
+				       : 0;
+		}
+
+		// A row of a list with columns. Each cell is clipped to its own column, so
+		// a long symbol cannot run into the price beside it.
+		void draw_cells(pf::draw_context& dc, const list_item& item, const pf::irect& bounds,
+		                const pf::font& font_spec, const pf::color_t bg) const
+		{
+			const auto rects = column_rects(bounds.width());
+			const auto row_color = item_text_color(item);
+			const auto y = centered_row_text_top(bounds);
+
+			for (size_t i = 0; i < _columns.size() && i < rects.size(); i++)
+			{
+				const auto left = bounds.left + rects[i].left;
+				const auto right = bounds.left + rects[i].right;
+				if (right <= left) continue;
+
+				// A row with fewer cells than columns leaves the rest blank rather
+				// than shifting everything along.
+				if (i >= item.cells.size()) continue;
+
+				const auto& cell = item.cells[i];
+				if (cell.text.empty()) continue;
+
+				const auto color = cell.has_color ? cell.color : row_color;
+				const auto size = dc.measure_text(cell.text, font_spec);
+
+				const auto x = _columns[i].right_align
+					               ? std::max(left, right - _theme.padding_x - size.cx)
+					               : left + _theme.padding_x;
+
+				const pf::irect clip{x, y, std::min(x + size.cx, right), y + size.cy};
+				if (clip.width() > 0) dc.draw_text(x, y, clip, cell.text, font_spec, color, bg);
+			}
+		}
+
+		[[nodiscard]] int centered_row_text_top(const pf::irect& bounds) const
+		{
+			return bounds.top + std::max(0, (bounds.height() - _font_extent.cy) / 2);
+		}
+
 		int first_visible_item() const
 		{
 			int lo = 0;

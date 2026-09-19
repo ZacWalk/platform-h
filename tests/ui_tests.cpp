@@ -1729,6 +1729,159 @@ namespace
 		CHECK(file_x > folder_x);
 	}
 
+	void test_list_columns_and_sorting()
+	{
+		// A list with columns draws a header and reports clicks on it. The
+		// *ordering* stays with the application: a column of live prices sorts by
+		// the number behind the text, with its own rule for rows that have none,
+		// and the list cannot know that.
+		struct sorting_probe : list_probe
+		{
+			using list_probe::list_probe;
+
+			int sorted_column = -1;
+			bool sorted_ascending = false;
+			int sort_calls = 0;
+
+			void on_sort_changed(const int column, const bool ascending) override
+			{
+				sorted_column = column;
+				sorted_ascending = ascending;
+				++sort_calls;
+			}
+		};
+
+		const pf::ui::theme theme;
+		sorting_probe view(theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		view.set_columns({
+			{"Sym", 37, false},
+			{"Price", 35, true},
+			{"Chg%", 28, true},
+		});
+
+		const auto add_row = [&](const std::string& sym, const std::string& price,
+		                         const std::string& chg, const pf::color_t chg_color)
+		{
+			auto item = std::make_shared<pf::ui::list_item>();
+			item->cells = {pf::ui::list_cell{sym}, pf::ui::list_cell{price},
+			               pf::ui::list_cell{chg, chg_color}};
+			view._items.push_back(item);
+		};
+
+		add_row("AAPL", "182.40", "+1.2%", theme.text);
+		add_row("MSFT", "410.15", "-0.4%", theme.dim_text);
+
+		size_list(view, frame, {300, 200});
+
+		// The header only exists because there are columns to title.
+		CHECK(view._header_height > 0);
+
+		// Columns divide the width by weight, in order, and cover it exactly.
+		const auto rects = view.column_rects(300);
+		CHECK_EQ(rects.size(), 3u);
+		CHECK_EQ(rects[0].left, 0);
+		CHECK_EQ(rects[1].left, rects[0].right);
+		CHECK_EQ(rects[2].left, rects[1].right);
+		CHECK_EQ(rects[2].right, 300);
+		CHECK(rects[0].width() > rects[2].width()); // 37 beats 28
+
+		// A point in the header names its column; a point below it names none.
+		CHECK_EQ(view.column_at({5, 2}), 0);
+		CHECK_EQ(view.column_at({rects[2].left + 5, 2}), 2);
+		CHECK_EQ(view.column_at({5, view._header_height + 10}), -1);
+
+		// Nothing is sorted until something is clicked.
+		CHECK_EQ(view.sort_column(), -1);
+
+		pf::mouse_params click;
+		click.point = {rects[1].left + 5, 2};
+		view.handle_mouse(frame, pf::mouse_message_type::left_button_down, click);
+
+		CHECK_EQ(view.sort_calls, 1);
+		CHECK_EQ(view.sorted_column, 1);
+		CHECK(view.sorted_ascending);
+		CHECK_EQ(view.sort_column(), 1);
+
+		// Clicking the sorted column reverses it.
+		view.handle_mouse(frame, pf::mouse_message_type::left_button_down, click);
+		CHECK_EQ(view.sort_calls, 2);
+		CHECK(!view.sorted_ascending);
+		CHECK(!view.sort_ascending());
+
+		// Clicking a different one starts ascending again rather than inheriting
+		// the previous direction.
+		click.point = {rects[2].left + 5, 2};
+		view.handle_mouse(frame, pf::mouse_message_type::left_button_down, click);
+		CHECK_EQ(view.sorted_column, 2);
+		CHECK(view.sorted_ascending);
+
+		// A header click is not a row click: the selection is untouched.
+		CHECK(!view.selected_item());
+	}
+
+	void test_list_draws_its_cells()
+	{
+		const pf::ui::theme theme;
+		list_probe view(theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		view.set_columns({{"Sym", 40, false}, {"Price", 30, true}, {"Chg%", 30, true}});
+		view.set_sort(2, false);
+
+		auto item = std::make_shared<pf::ui::list_item>();
+		item->cells = {
+			pf::ui::list_cell{"AAPL"},
+			pf::ui::list_cell{"182.40"},
+			pf::ui::list_cell{"+1.2%", theme.match_highlight},
+		};
+		view._items.push_back(item);
+
+		size_list(view, frame, {400, 200});
+
+		pf::ui::test::fake_draw_context draw{pf::irect(0, 0, 400, 200)};
+		view.handle_paint(frame, draw);
+
+		const auto drawn = draw.drawn_text();
+
+		// The titles and the cells are all on screen.
+		CHECK(drawn.find("Sym") != std::string::npos);
+		CHECK(drawn.find("AAPL") != std::string::npos);
+		CHECK(drawn.find("182.40") != std::string::npos);
+		CHECK(drawn.find("+1.2%") != std::string::npos);
+
+		// The sorted column carries an indicator; the others do not.
+		auto sorted_marked = false;
+		for (const auto& t : draw.texts)
+			if (t.text.find("Chg%") != std::string::npos &&
+				t.text.find("\xE2\x96\xBC") != std::string::npos)
+				sorted_marked = true;
+		CHECK(sorted_marked);
+
+		// A cell can carry its own colour — a gain is green whatever the row is.
+		auto coloured_cell = false;
+		for (const auto& t : draw.texts)
+			if (t.text == "+1.2%" && t.color == theme.match_highlight) coloured_cell = true;
+		CHECK(coloured_cell);
+
+		// Cells are laid out left to right in column order.
+		int sym_x = -1, price_x = -1, chg_x = -1;
+		for (const auto& t : draw.texts)
+		{
+			if (t.text == "AAPL") sym_x = t.x;
+			if (t.text == "182.40") price_x = t.x;
+			if (t.text == "+1.2%") chg_x = t.x;
+		}
+		CHECK(sym_x >= 0 && price_x > sym_x && chg_x > price_x);
+
+		// And a row copies as its cells, so a run of them pastes as a table.
+		view.set_selected(0);
+		CHECK_STR(view.selected_rows_text(), "AAPL\t182.40\t+1.2%");
+	}
+
 	void test_list_row_text_fits_its_column()
 	{
 		const pf::ui::theme theme;
@@ -2788,6 +2941,8 @@ int main()
 	test_list_selection_and_copy();
 	test_list_paints_its_rows();
 	test_list_row_text_fits_its_column();
+	test_list_columns_and_sorting();
+	test_list_draws_its_cells();
 	test_pane_host_routes_input();
 	test_pane_host_focus_and_keyboard();
 	test_pane_host_capture_and_timers();
