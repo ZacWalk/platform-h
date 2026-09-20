@@ -290,6 +290,19 @@ namespace pf::ui
 			return pf::platform_text_to_clipboard(text);
 		}
 
+		// What a right-click offers when there is no application command table to
+		// offer instead. can_copy_rows is what decides whether it is worth
+		// offering — which is what that predicate was written for.
+		[[nodiscard]] virtual std::vector<pf::menu_command> default_popup_menu()
+		{
+			std::vector<pf::menu_command> items;
+
+			items.emplace_back("&Copy", 0, [this] { (void)copy_rows(); },
+			                   [this] { return can_copy_rows(); });
+
+			return items;
+		}
+
 		// --- Inline edit field operations, invoked by the application command table ---
 
 		[[nodiscard]] bool has_active_edit_box() { return active_edit_box() != nullptr; }
@@ -415,6 +428,15 @@ namespace pf::ui
 			if (msg == mt::left_button_down) return on_left_button_down(window, params.point);
 			if (msg == mt::left_button_up) return on_left_button_up(window);
 			if (msg == mt::left_button_dbl_clk) return 0; // the single click already handled it
+			if (msg == mt::context_menu)
+			{
+				// An application with its own command table intercepts this before
+				// it gets here — both of rethinkify's lists do. One without gets
+				// what the list itself can do.
+				const auto items = default_popup_menu();
+				if (!items.empty()) window->show_popup_menu(items, params.point);
+				return 0;
+			}
 			if (msg == mt::mouse_move) return on_mouse_move(window, params.point);
 			if (msg == mt::mouse_leave) return on_mouse_leave(window);
 			if (msg == mt::mouse_wheel)
