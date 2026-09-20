@@ -63,6 +63,12 @@ namespace pf::ui
 			return pf::color_t(80, 80, 80);
 		case text_style::md_bullet:
 			return pf::color_t(200, 200, 100);
+		case text_style::md_quote:
+			// Quoted text reads as text by default. An application that uses a
+			// quote to mean something — a chat transcript marking whose turn it
+			// is — overrides this; a document renderer should not have its
+			// blockquotes recoloured for it.
+			return pf::color_t(222, 222, 222);
 		}
 
 		return pf::color_t(222, 222, 222);

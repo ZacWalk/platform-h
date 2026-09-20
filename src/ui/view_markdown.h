@@ -562,7 +562,8 @@ namespace pf::ui
 
 		// --- Styling ---
 
-		static text_style style_for_span(const md::span& s, const uint8_t heading)
+		static text_style style_for_span(const md::span& s, const uint8_t heading,
+		                                 const md::block kind)
 		{
 			if (!s.link.empty()) return text_style::md_link_text;
 			if (s.code) return text_style::md_code;
@@ -571,6 +572,10 @@ namespace pf::ui
 			if (heading == 3) return text_style::md_heading3;
 			if (s.bold) return text_style::md_bold;
 			if (s.italic) return text_style::md_italic;
+
+			// Quoted text is still text, so this is last: a link or a bold run
+			// inside a quote is drawn as what it is.
+			if (kind == md::block::quote) return text_style::md_quote;
 			return text_style::normal_text;
 		}
 
@@ -619,7 +624,7 @@ namespace pf::ui
 					     static_cast<int>(span.link.size()), text_style::md_link_url);
 
 				fill(static_cast<int>(span.text.data() - text.data()),
-				     static_cast<int>(span.text.size()), style_for_span(span, heading));
+				     static_cast<int>(span.text.size()), style_for_span(span, heading, parsed.kind));
 			}
 
 			_style_runs.clear();

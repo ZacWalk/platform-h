@@ -22,6 +22,16 @@ namespace pf::ui
 
 		[[nodiscard]] bool allows_drag_selection() const override { return false; }
 
+		// True when the newest content is on screen. A transcript that grows while
+		// it is being read should follow the end only when the reader was already
+		// there; scrolling back to something is a request not to be moved.
+		[[nodiscard]] bool at_bottom() const
+		{
+			return _scroll_offset.y >= max_scroll_pixel() - _font_extent.cy;
+		}
+
+		void scroll_to_end() { scroll_content_to_end(); }
+
 		void set_word_wrap(bool enabled) override
 		{
 		}
@@ -90,9 +100,11 @@ namespace pf::ui
 			_host.invalidate_status();
 		}
 
-		void scroll_content_to_end()
+		void scroll_content_to_end() { set_scroll_pixel(max_scroll_pixel()); }
+
+		[[nodiscard]] int max_scroll_pixel() const
 		{
-			set_scroll_pixel(std::max(0, _content_extent.cy - (_view_extent.cy - text_top())));
+			return std::max(0, _content_extent.cy - (_view_extent.cy - text_top()));
 		}
 
 		// Columns that fit in a given pixel width
