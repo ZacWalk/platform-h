@@ -393,6 +393,31 @@ namespace pf::ui
 					zoom(window, -2);
 					return true;
 				}
+
+				// A view with no menu behind it gets no copy command, so the
+				// shortcuts are its own to handle. A view that does live under one
+				// never sees these: the accelerator table answers first.
+				//
+				// Cut and paste are no-ops on a view that cannot edit, so a
+				// read-only transcript copies and selects all without being able
+				// to lose what it is showing.
+				switch (vk)
+				{
+				case 'A':
+					select_all_text();
+					return true;
+				case 'C':
+					copy_text_to_clipboard();
+					return true;
+				case 'X':
+					cut_text_to_clipboard();
+					return true;
+				case 'V':
+					paste_text_from_clipboard();
+					return true;
+				default:
+					break;
+				}
 			}
 
 			// Basic scroll navigation (overridden by derived views with cursor-based navigation)

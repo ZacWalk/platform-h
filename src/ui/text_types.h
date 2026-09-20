@@ -119,6 +119,7 @@ namespace pf::ui
 		md_link_url,
 		md_marker,
 		md_bullet,
+		md_quote,
 	};
 
 	// One styled run, starting at a byte offset in the line.

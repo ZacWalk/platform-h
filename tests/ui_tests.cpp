@@ -1451,6 +1451,104 @@ namespace
 		CHECK_EQ(view.text_at(after).x, 3);
 	}
 
+	// A quote is how a chat transcript says whose turn it is, so quoted text has to
+	// be styleable on its own. The default palette leaves it reading as ordinary
+	// text, which is what a document renderer wants — the style exists so an
+	// application can mean something by it, not so every blockquote changes colour.
+	void test_markdown_view_styles_a_quote()
+	{
+		struct quote_theme : pf::ui::theme
+		{
+			[[nodiscard]] pf::color_t style_color(const pf::ui::text_style s) const override
+			{
+				return s == pf::ui::text_style::md_quote
+					       ? pf::color_t{0x60, 0xa0, 0xff}
+					       : pf::ui::theme::style_color(s);
+			}
+		};
+
+		const pf::ui::theme plain;
+		CHECK(plain.style_color(pf::ui::text_style::md_quote) ==
+			plain.style_color(pf::ui::text_style::normal_text));
+
+		const quote_theme theme;
+		pf::ui::test::recording_view_host host;
+		markdown_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		show_markdown(view, host, frame, "> asked something\nanswered something\n");
+
+		pf::ui::test::fake_draw_context draw{pf::irect(0, 0, 480, 320)};
+		view.handle_paint(frame, draw);
+
+		auto quoted = false;
+		auto plain_run = false;
+
+		for (const auto& t : draw.texts)
+		{
+			if (t.text.find("asked") != std::string::npos)
+			{
+				quoted = true;
+				CHECK(t.color == theme.style_color(pf::ui::text_style::md_quote));
+			}
+			if (t.text.find("answered") != std::string::npos)
+			{
+				plain_run = true;
+				CHECK(t.color == theme.style_color(pf::ui::text_style::normal_text));
+			}
+		}
+
+		CHECK(quoted);
+		CHECK(plain_run);
+	}
+
+	// A transcript has no menu behind it any more than a prompt box does, so the
+	// copy shortcuts have to reach the view itself. Cut and paste must not: a
+	// read-only view that can lose what it is showing is worse than one that
+	// cannot copy.
+	void test_read_only_view_copies_with_the_keyboard()
+	{
+		struct clip_probe : markdown_probe
+		{
+			using markdown_probe::markdown_probe;
+
+			mutable std::string board;
+
+			[[nodiscard]] std::string clipboard_text() const override { return board; }
+
+			bool set_clipboard(const std::string_view text) const override
+			{
+				board = text;
+				return true;
+			}
+		};
+
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		clip_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		const auto buf = show_markdown(view, host, frame, "first line\nsecond line");
+		const auto original = buf->str();
+		window->held_keys.insert(pf::platform_key::Control);
+
+		view.on_key_down(frame, 'A');
+		CHECK(view.has_current_selection());
+
+		view.on_key_down(frame, 'C');
+		CHECK_STR(view.board, "first line\r\nsecond line");
+
+		// Neither verb may reach the buffer, and a refused cut must not quietly
+		// put the transcript on the clipboard either.
+		view.board = "elsewhere";
+		view.on_key_down(frame, 'X');
+		view.on_key_down(frame, 'V');
+		CHECK_STR(buf->str(), original);
+		CHECK_STR(view.board, "elsewhere");
+	}
+
 	// Both table views are driven the same way: show text, size the view, lay out.
 	template <typename View>
 	pf::ui::text_buffer_ptr show_in(View& view, pf::ui::view_host& host, pf::window_frame_ptr& frame,
@@ -3174,6 +3272,8 @@ int main()
 	test_markdown_view_tables();
 	test_markdown_view_wraps_without_touching_the_buffer();
 	test_markdown_view_utf8_positions();
+	test_markdown_view_styles_a_quote();
+	test_read_only_view_copies_with_the_keyboard();
 	test_csv_view();
 	test_csv_view_quotes_and_utf8();
 	test_hex_view();
