@@ -1682,6 +1682,7 @@ namespace
 		using pf::ui::list_view::_items;
 		using pf::ui::list_view::_header_height;
 		using pf::ui::list_view::draw_item;
+		using pf::ui::list_view::on_key_down;
 
 		void add(const std::string_view text, const bool group = false, const int depth = 0)
 		{
@@ -1999,6 +2000,51 @@ namespace
 		// And a row copies as its cells, so a run of them pastes as a table.
 		view.set_selected(0);
 		CHECK_STR(view.selected_rows_text(), "AAPL\t182.40\t+1.2%");
+	}
+
+	// A list under a menu gets copy as a command. A list in an application that
+	// has no menu gets nothing — which is how `copy_rows` came to exist, be
+	// tested for what it would produce, and never be reachable by anyone.
+	void test_list_copies_with_the_keyboard()
+	{
+		struct clip_list : list_probe
+		{
+			using list_probe::list_probe;
+
+			mutable std::string board;
+
+			bool set_clipboard(const std::string_view text) const override
+			{
+				board = text;
+				return true;
+			}
+		};
+
+		const pf::ui::theme theme;
+		clip_list view(theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		for (int i = 0; i < 4; i++) view.add(std::format("row {}", i));
+		size_list(view, frame);
+
+		view.set_selected(1);
+		window->held_keys.insert(pf::platform_key::Control);
+		view.on_key_down(frame, 'C');
+		CHECK_STR(view.board, "row 1");
+
+		// A run of rows copies as the run, which is what Shift-navigation is for.
+		view.board.clear();
+		view.navigate_next(frame, true, false, true);
+		view.on_key_down(frame, 'C');
+		CHECK_STR(view.board, "row 1\r\nrow 2");
+
+		// Ctrl+Shift+C is a different shortcut and must still reach the view as
+		// an ordinary key rather than being swallowed as a copy.
+		view.board.clear();
+		window->held_keys.insert(pf::platform_key::Shift);
+		view.on_key_down(frame, 'C');
+		CHECK_STR(view.board, "");
 	}
 
 	void test_list_row_text_fits_its_column()
@@ -3281,6 +3327,7 @@ int main()
 	test_list_selection_and_copy();
 	test_list_paints_its_rows();
 	test_list_row_text_fits_its_column();
+	test_list_copies_with_the_keyboard();
 	test_list_columns_and_sorting();
 	test_list_draws_its_cells();
 	test_pane_host_routes_input();

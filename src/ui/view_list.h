@@ -278,7 +278,16 @@ namespace pf::ui
 		bool copy_rows() const
 		{
 			const auto text = selected_rows_text();
-			return !text.empty() && pf::platform_text_to_clipboard(text);
+			return !text.empty() && set_clipboard(text);
+		}
+
+		// The seam text_view already has, for the same reason: a widget does not
+		// always hold a window_frame, so the default is the process-wide
+		// clipboard — but an application that does hold one, or a test that must
+		// not touch the machine's, can say otherwise.
+		virtual bool set_clipboard(const std::string_view text) const
+		{
+			return pf::platform_text_to_clipboard(text);
 		}
 
 		// --- Inline edit field operations, invoked by the application command table ---
@@ -733,6 +742,18 @@ namespace pf::ui
 		{
 			namespace pk = pf::platform_key;
 			const bool shift = window->is_key_down(pk::Shift);
+			const bool control = window->is_key_down(pk::Control);
+
+			// A list with no menu behind it gets no copy command, and the rows it
+			// already knows how to turn into text would otherwise be unreachable.
+			// A list that does live under a menu never sees this — the accelerator
+			// table answers first — which is why it went unnoticed.
+			if (control && !shift && vk == 'C')
+			{
+				if (has_active_edit_box()) (void)edit_copy();
+				else (void)copy_rows();
+				return 0;
+			}
 
 			if (vk == pk::Down)
 			{
