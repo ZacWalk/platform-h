@@ -50,9 +50,22 @@ namespace pf::ui
 		void set_link_handler(link_fn handler) { _on_link = std::move(handler); }
 		[[nodiscard]] bool has_link_handler() const { return static_cast<bool>(_on_link); }
 
-		// The link under a client point, or empty when there is none. Returned by
-		// value: the caller may keep it, and the line it was read from is scratch.
-		[[nodiscard]] std::string link_at(const pf::ipoint& point) const
+		// Which link was hit, as well as what it points at.
+		//
+		// An application that decides *per occurrence* whether a link may be
+		// followed needs to know which one was clicked, not just its target: the
+		// same target can appear twice in one document with different provenance,
+		// and only one of them may be navigable. list0 is why this exists — a
+		// citation verified in the turn that read it is not the same thing as the
+		// same URI repeated in a turn that did not.
+		struct link_hit
+		{
+			std::string target;
+			int line = -1; // source line, or -1 when no link was hit
+			int span = -1; // index into that line's parsed spans
+		};
+
+		[[nodiscard]] link_hit link_hit_at(const pf::ipoint& point) const
 		{
 			bool on_text = false;
 			const auto loc = hit_test(point, &on_text);
@@ -67,17 +80,25 @@ namespace pf::ui
 			auto in_fence = _lines[loc.y].in_fence;
 			md::parse_source_line(text, in_fence, _link_line);
 
-			for (const auto& span : _link_line.spans)
+			for (size_t i = 0; i < _link_line.spans.size(); ++i)
 			{
+				const auto& span = _link_line.spans[i];
 				if (span.link.empty()) continue;
 
 				// Both halves of "[text](url)" answer, so clicking anywhere in the
 				// link follows it.
 				if (offset_within(text, span.text, loc.x) || offset_within(text, span.link, loc.x))
-					return std::string(span.link);
+					return {std::string(span.link), loc.y, static_cast<int>(i)};
 			}
 
 			return {};
+		}
+
+		// The link under a client point, or empty when there is none. Returned by
+		// value: the caller may keep it, and the line it was read from is scratch.
+		[[nodiscard]] std::string link_at(const pf::ipoint& point) const
+		{
+			return link_hit_at(point).target;
 		}
 
 		// This view hit-tests the layout it actually drew, so dragging out a
