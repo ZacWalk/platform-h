@@ -2922,6 +2922,73 @@ namespace
 		CHECK_EQ(caret_fills(typed), 1);
 	}
 
+	// An application with no command table still gets a usable right-click, for
+	// the same reason it gets the clipboard shortcuts: there is nothing behind
+	// the view to offer them instead.
+	void test_view_offers_its_own_context_menu()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		composer_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		show_composer(view, host, frame);
+		view.set_text("hello world");
+
+		const auto items = view.on_popup_menu({0, 0});
+
+		// Four verbs and the separator between what changes the text and what
+		// only selects it. Checked before anything indexes them, so a view that
+		// stops offering a menu reports it rather than crashing the suite.
+		CHECK_EQ(items.size(), 5u);
+		if (items.size() != 5) return;
+
+		CHECK_STR(items[0].text, "Cu&t");
+		CHECK_STR(items[1].text, "&Copy");
+		CHECK_STR(items[2].text, "&Paste");
+		CHECK(items[3].text.empty());
+		CHECK_STR(items[4].text, "Select &All");
+
+        // Nothing is selected yet, so the two that need a selection say so
+		// rather than failing quietly when chosen.
+		CHECK(!items[0].is_enabled());
+		CHECK(!items[1].is_enabled());
+		CHECK(items[4].is_enabled());
+
+		view.select_all_text();
+		CHECK(items[0].is_enabled());
+		CHECK(items[1].is_enabled());
+
+		// The items carry the verb, not an application command id, so choosing
+		// one does the thing without anything else being wired up.
+		CHECK_EQ(items[0].id, 0);
+		CHECK(static_cast<bool>(items[1].action));
+	}
+
+	// A read-only view offers the same menu with the editing verbs disabled: a
+	// transcript can be copied from and cannot be cut.
+	void test_read_only_view_offers_copy_but_not_cut()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		markdown_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		show_markdown(view, host, frame, "first line\nsecond line");
+		view.select_all_text();
+
+		const auto items = view.on_popup_menu({0, 0});
+
+		CHECK_EQ(items.size(), 5u);
+		if (items.size() != 5) return;
+
+		CHECK(items[1].is_enabled());  // copy
+		CHECK(!items[0].is_enabled()); // cut
+		CHECK(!items[2].is_enabled()); // paste
+	}
+
 	void test_composer_edits_like_a_document()
 	{
 		pf::ui::test::recording_view_host host;
@@ -3405,6 +3472,8 @@ int main()
 	test_composer_filters_what_is_typed_and_pasted();
 	test_composer_handles_the_clipboard_shortcuts();
 	test_composer_keeps_its_placeholder_while_focused();
+	test_view_offers_its_own_context_menu();
+	test_read_only_view_offers_copy_but_not_cut();
 	test_composer_submits_and_recalls();
 	test_composer_keeps_a_refused_prompt();
 	test_composer_grows_then_scrolls();
