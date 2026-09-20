@@ -1353,6 +1353,43 @@ namespace
 		CHECK_STR(view.link_at({5000, link_point.y}), "");
 	}
 
+	// The same target can appear twice with different provenance, and only one
+	// occurrence may be navigable — so an application that decides per occurrence
+	// has to be told which one was hit.
+	void test_markdown_view_reports_which_link_was_hit()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		markdown_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		show_markdown(view, host, frame,
+		              "see [first](x:1) and [second](x:2)\nplain line\nagain [third](x:1)\n");
+
+		const auto first = view.link_hit_at(view.text_to_client({5, 0}));
+		CHECK_STR(first.target, "x:1");
+		CHECK_EQ(first.line, 0);
+
+		const auto second = view.link_hit_at(view.text_to_client({24, 0}));
+		CHECK_STR(second.target, "x:2");
+		CHECK_EQ(second.line, 0);
+
+		// Same line, different spans: the span index is what tells them apart.
+		CHECK(first.span != second.span);
+
+		// The same target on another line is a different occurrence, and says so.
+		const auto third = view.link_hit_at(view.text_to_client({8, 2}));
+		CHECK_STR(third.target, "x:1");
+		CHECK_EQ(third.line, 2);
+
+		// Nothing hit says nothing, rather than pointing at line zero.
+		const auto miss = view.link_hit_at({5000, view.text_to_client({0, 1}).y});
+		CHECK_STR(miss.target, "");
+		CHECK_EQ(miss.line, -1);
+		CHECK_EQ(miss.span, -1);
+	}
+
 	void test_markdown_view_tables()
 	{
 		pf::ui::test::recording_view_host host;
@@ -3452,6 +3489,7 @@ int main()
 	test_markdown_view_selects_the_source();
 	test_markdown_view_paints_markup();
 	test_markdown_view_links();
+	test_markdown_view_reports_which_link_was_hit();
 	test_markdown_view_tables();
 	test_markdown_view_wraps_without_touching_the_buffer();
 	test_markdown_view_utf8_positions();
