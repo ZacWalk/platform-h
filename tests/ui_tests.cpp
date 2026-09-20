@@ -2865,6 +2865,63 @@ namespace
 		return buf;
 	}
 
+	// A prompt box that says what it is for should keep saying it while somebody
+	// is deciding what to type. It used to stop the moment the box took focus,
+	// because drawing the hint painted over the caret.
+	void test_composer_keeps_its_placeholder_while_focused()
+	{
+		pf::ui::test::recording_view_host host;
+		const pf::ui::theme theme;
+		composer_probe view(host, theme);
+		auto window = std::make_shared<pf::ui::test::fake_window_frame>();
+		pf::window_frame_ptr frame = window;
+
+		show_composer(view, host, frame);
+		view.set_placeholder("Ask about stocks...");
+
+		const auto hint_drawn = [&](pf::ui::test::fake_draw_context& draw)
+		{
+			for (const auto& t : draw.texts)
+				if (t.text.find("Ask about") != std::string::npos) return true;
+			return false;
+		};
+
+		pf::ui::test::fake_draw_context unfocused{pf::irect(0, 0, 400, 64)};
+		view.handle_paint(frame, unfocused);
+		CHECK(hint_drawn(unfocused));
+
+		// Focused and still empty: the hint is what tells somebody what to type,
+		// and taking focus is exactly when they are about to.
+		window->set_focus();
+		view.update_focus(frame);
+
+		pf::ui::test::fake_draw_context focused{pf::irect(0, 0, 400, 64)};
+		view.handle_paint(frame, focused);
+		CHECK(hint_drawn(focused));
+
+		// And the caret survives it. A recording draw context logs calls rather
+		// than compositing pixels, so it cannot see one thing painted over
+		// another — what it can see is the caret being drawn a second time, after
+		// the hint, which is what stops the hint swallowing it on screen.
+		const auto caret_fills = [&](const pf::ui::test::fake_draw_context& draw)
+		{
+			int n = 0;
+			for (const auto& f : draw.fills)
+				if (f.color == theme.text && f.rect.width() <= 2 && f.rect.height() > 2) ++n;
+			return n;
+		};
+
+		CHECK_EQ(caret_fills(focused), 2);
+
+		// Once there is text there is nothing to hint at, and the caret is drawn
+		// the once.
+		view.set_text("hello");
+		pf::ui::test::fake_draw_context typed{pf::irect(0, 0, 400, 64)};
+		view.handle_paint(frame, typed);
+		CHECK(!hint_drawn(typed));
+		CHECK_EQ(caret_fills(typed), 1);
+	}
+
 	void test_composer_edits_like_a_document()
 	{
 		pf::ui::test::recording_view_host host;
@@ -3347,6 +3404,7 @@ int main()
 	test_composer_edits_like_a_document();
 	test_composer_filters_what_is_typed_and_pasted();
 	test_composer_handles_the_clipboard_shortcuts();
+	test_composer_keeps_its_placeholder_while_focused();
 	test_composer_submits_and_recalls();
 	test_composer_keeps_a_refused_prompt();
 	test_composer_grows_then_scrolls();
