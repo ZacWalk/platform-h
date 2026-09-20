@@ -84,10 +84,34 @@ namespace pf::ui
 
 		// What a right-click offers is the application's command table, which this
 		// layer cannot see; the context supplies it, and is told which view asked.
+		//
+		// An application that has no command table gets the view's own verbs
+		// instead, for the same reason it gets the clipboard shortcuts: a view
+		// with nothing behind it still has to be usable. A context that answers
+		// with nothing is taken at its word — that is an application saying this
+		// view has no menu, not one that forgot to build it.
 		virtual std::vector<pf::menu_command> on_popup_menu(const pf::ipoint& client_pt)
 		{
-			return _context ? _context->popup_menu_items(*this, client_pt)
-			                : std::vector<pf::menu_command>{};
+			return _context ? _context->popup_menu_items(*this, client_pt) : default_popup_menu();
+		}
+
+		// The verbs a view can perform on its own text, each enabled by the same
+		// predicate the application's menu would have asked.
+		[[nodiscard]] virtual std::vector<pf::menu_command> default_popup_menu()
+		{
+			std::vector<pf::menu_command> items;
+
+			items.emplace_back("Cu&t", 0, [this] { (void)cut_text_to_clipboard(); },
+			                   [this] { return can_cut_text(); });
+			items.emplace_back("&Copy", 0, [this] { (void)copy_text_to_clipboard(); },
+			                   [this] { return can_copy_text(); });
+			items.emplace_back("&Paste", 0, [this] { (void)paste_text_from_clipboard(); },
+			                   [this] { return can_paste_text(); });
+			items.emplace_back();
+			items.emplace_back("Select &All", 0, [this] { select_all_text(); },
+			                   [this] { return _doc && _doc->size() > 0; });
+
+			return items;
 		}
 
 		[[nodiscard]] virtual bool has_caret() const { return true; }

@@ -1,9 +1,11 @@
 // view_host.h — what a view needs from whatever is hosting it.
 //
 // A view never repaints directly and never names an application command. It
-// raises a request on view_host and lets the host coalesce the work, and it
-// describes menu actions to a context_menu_builder rather than referring to a
-// command table it cannot see.
+// raises a request on view_host and lets the host coalesce the work.
+//
+// What a right-click offers is a separate seam: doc_view::on_popup_menu asks
+// the view_context for the application's own items, and falls back to the
+// view's own verbs when there is no context to ask.
 
 #pragma once
 
@@ -46,18 +48,5 @@ namespace pf::ui
 		// The status text or the focus band changed. Separate again because it
 		// repaints chrome around the text rather than the text itself.
 		virtual void invalidate_status() = 0;
-	};
-
-	// The view adds what it can do; the host decides how it appears and what sits
-	// beside it. Keeps command identity on the application side of the boundary.
-	class context_menu_builder
-	{
-	public:
-		virtual ~context_menu_builder() = default;
-
-		virtual void add_item(std::string_view text, std::function<void()> action,
-		                      bool enabled = true, bool checked = false) = 0;
-
-		virtual void add_separator() = 0;
 	};
 }
