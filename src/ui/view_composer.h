@@ -153,9 +153,11 @@ namespace pf::ui
 
 			const auto box = client_rect();
 
-			// Only while unfocused: draw_text fills its rect, which would swallow
-			// the caret.
-			if (!_focused && !_placeholder.empty() && is_empty())
+			// An empty box says what it is for, focused or not. draw_text fills its
+			// rect, which swallows the caret sitting at the start of the line — so
+			// the caret goes back on top rather than the hint being hidden whenever
+			// somebody is actually about to type into it.
+			if (!_placeholder.empty() && is_empty())
 			{
 				const auto y = top_content_padding();
 				const auto width = draw.measure_text(_placeholder, body_font()).cx;
@@ -163,6 +165,8 @@ namespace pf::ui
 				                     y + _font_extent.cy);
 				draw.draw_text(clip.left, y, clip, _placeholder, body_font(),
 				               _theme.dim_text, _theme.style_color(text_style::normal_bkgnd));
+
+				draw_caret(draw);
 			}
 
 			edit_box::draw_border(draw, box, window->has_focus(), _theme.dpi_scale);
@@ -175,7 +179,7 @@ namespace pf::ui
 			// Half a character cannot survive the focus leaving
 			if (!window->has_focus()) _assembler.cancel();
 
-			// The border and the placeholder both change with focus
+			// The border and the caret both change with focus
 			window->invalidate();
 		}
 
