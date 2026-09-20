@@ -2045,6 +2045,19 @@ namespace
 		window->held_keys.insert(pf::platform_key::Shift);
 		view.on_key_down(frame, 'C');
 		CHECK_STR(view.board, "");
+
+		// A right-click offers the same copy, for an application that has no
+		// command table to put one on. can_copy_rows is what it asks.
+		window->held_keys.clear();
+		view.set_selected(0);
+		const auto items = view.default_popup_menu();
+		CHECK_EQ(items.size(), 1u);
+		if (items.size() != 1) return;
+		CHECK_STR(items[0].text, "&Copy");
+		CHECK(items[0].is_enabled());
+
+		view.set_selected(-1);
+		CHECK(!items[0].is_enabled());
 	}
 
 	void test_list_row_text_fits_its_column()
