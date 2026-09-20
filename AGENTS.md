@@ -57,8 +57,8 @@ opens a file, never knows a path, and never names an application.
 | `src/ui/text_line.h`, `text_buffer.h` / `.cpp` | The UTF-8 line and the editing model: lines, selection, undo |
 | `src/ui/text_input.h` | `pf::ui::input` — filtering and bounding untrusted text before it enters a prompt |
 | `src/ui/markdown.h` | `pf::ui::md` — the Markdown model, its parser and the HTML reducer |
-| `src/ui/view_base.h` → `view_text.h` → `view_doc.h` | The view hierarchy: scrolling, selection and the clipboard, then the caret, wrap and hit testing |
-| `src/ui/view_doc_edit.h`, `view_doc_readonly.h`, `view_markdown.h`, `view_csv.h`, `view_hex.h` | The views an application shows: editable, read-only, rendered Markdown, CSV tables and bytes |
+| `src/ui/view_base.h` → `view_text.h` → `view_doc.h` | The view hierarchy: scrolling, selection and the clipboard — **including Ctrl+A/C/X/V, which live here rather than in any one view, because a view with no menu behind it gets no copy command** — then the caret, wrap and hit testing |
+| `src/ui/view_doc_edit.h`, `view_doc_readonly.h`, `view_markdown.h`, `view_csv.h`, `view_hex.h` | The views an application shows: editable, read-only, rendered Markdown, CSV tables and bytes. `read_only_doc_view` also answers `at_bottom` and `scroll_to_end`, so a transcript that grows can follow its end only when the reader was already there |
 | `src/ui/view_composer.h` | `composer` — the prompt box: growing, history, and the input filter in front of it |
 | `src/ui/view_list.h` | `list_view` and `list_item` — the panel list: rows, selection, hover, keyboard and copy |
 | `src/ui/pane_host.h` | `pane_host` and `hosted_window` — running these views inside one window, for an application that draws its panes into rectangles rather than giving each a child window |
@@ -120,6 +120,23 @@ here is picked up by all of them with no publish step.
 3. Anything pure gets a case in `tests/ui_tests.cpp`. Layout and hit testing are
    testable without a window because `pf::measure_context` is an interface.
 4. An app opts in with `platform_add_app(<target> UI ...)`.
+
+### Put it at the level that needs it, not the level that found it
+
+Three capabilities here were first written one level too low, and each was only
+noticed when a *second* application adopted the code:
+
+- The clipboard shortcuts were added to `composer`, because a prompt box has no
+  menu behind it. Neither does a read-only transcript. They belong to `text_view`.
+- `at_bottom` and `scroll_to_end` were written in rethinkify's own agent view.
+  Every scrolling transcript wants them; they belong to `read_only_doc_view`.
+- A blockquote had no style of its own, so an application could not mean anything
+  by one. `text_style::md_quote` exists so a chat panel can mark whose turn it is
+  without the markdown model knowing what a turn is.
+
+**One consumer is not enough to validate a shared component.** When a second
+application needs something the first already had, ask whether the first put it
+in the right place before copying the shape.
 
 ## Two ways to host a view
 

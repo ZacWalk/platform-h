@@ -50,6 +50,27 @@ somewhere other than Windows, it does not belong here.
 - **`platform_common.cpp`** — the parts with no OS dependency at all; compiles
   on every target.
 
+### `src/ui/` — the presentation layer
+
+Everything here is in `pf::ui` and is reached as `#include "ui/<file>.h"`, or all
+at once through `ui/ui.h`. It may use `pf::`; it may not name an application,
+open a file, know a path or speak a protocol.
+
+| Category | Key types / files |
+|----------|-------------------|
+| Theme | `theme` — the colours, fonts and spacing a view draws with. Metrics are data because every consumer sets them; `style_color` is virtual because an application may want its own palette without touching a highlighter |
+| Hosting | `view_host` — what a view asks of the application: invalidation, `ensure_visible`, status. `pane_host` and `hosted_window` for an application that draws panes into rectangles rather than giving each a child window |
+| Text model | `text_buffer`, `text_line` — UTF-8 lines, selection, undo. `text_types.h` for `text_location`, `text_selection`, `text_style` |
+| Untrusted text | `input::normalize` and `input::char_assembler` — bounding and filtering text before it enters a prompt. Separate from the composer because the filtering is the security-relevant half and is worth testing on its own |
+| Views | `view_base` → `text_view` → `doc_view`, then `edit_doc_view` and `read_only_doc_view`. `text_view` owns selection, scrolling and the clipboard *including its shortcuts*, so a view with no menu behind it can still be copied from |
+| Rendered views | `markdown_view` over the `md` model, `csv_view`, `hex_view`, `list_view` — all over the source text, so what is on screen is still at a real position in the document and selection keeps working |
+| Prompt | `composer` — an `edit_doc_view` that grows with what is typed, keeps a history, filters everything that can put text in it, and keeps a prompt its application refuses |
+| Widgets | `edit_box`, `caret_blinker`, `splitter`, `custom_scrollbar`, `table_layout` |
+| Support | `syntax` highlighters, `spell` checking, and `test_support.h` — headless fakes for `measure_context`, `draw_context`, `view_host` and `window_frame` |
+
+Layout and hit testing are testable without a window, because
+`pf::measure_context` is an interface and `test_support.h` implements one.
+
 ## Usage
 
 Applications implement three callbacks:
